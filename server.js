@@ -4,7 +4,7 @@ const {Server}=require('socket.io');
 const crypto=require('crypto');
 const app=express(); app.use(express.static('public'));
 const server=http.createServer(app); const io=new Server(server); const rooms=new Map();
-const START_BANK=200000, INITIAL_BUYIN=20000, SB=1000, BB=2000, UNIT=1000, GAME_MS=60*60*1000, TURN_MS=10000;
+const START_BANK=200000, INITIAL_BUYIN=20000, SB=1000, BB=2000, UNIT=1000, GAME_MS=60*60*1000, TURN_MS=15000;
 const suits=['S','H','D','C'], ranks='23456789TJQKA';
 function makeDeck(){let d=suits.flatMap(s=>[...ranks].map(r=>r+s));for(let i=d.length-1;i>0;i--){let j=crypto.randomInt(i+1);[d[i],d[j]]=[d[j],d[i]]}return d}
 function score5(cards){const vals=cards.map(c=>ranks.indexOf(c[0])+2).sort((a,b)=>b-a),cnt=new Map();vals.forEach(v=>cnt.set(v,(cnt.get(v)||0)+1));const g=[...cnt].sort((a,b)=>b[1]-a[1]||b[0]-a[0]),flush=cards.every(c=>c[1]===cards[0][1]),u=[...new Set(vals)];if(u.includes(14))u.push(1);let st=0;for(let i=0;i<=u.length-5;i++)if(u[i]-u[i+4]===4){st=u[i];break}if(flush&&st)return[8,st];if(g[0][1]===4)return[7,g[0][0],g[1][0]];if(g[0][1]===3&&g[1][1]===2)return[6,g[0][0],g[1][0]];if(flush)return[5,...vals];if(st)return[4,st];if(g[0][1]===3)return[3,g[0][0],...g.slice(1).map(x=>x[0]).sort((a,b)=>b-a)];if(g[0][1]===2&&g[1][1]===2)return[2,Math.max(g[0][0],g[1][0]),Math.min(g[0][0],g[1][0]),g[2][0]];if(g[0][1]===2)return[1,g[0][0],...g.slice(1).map(x=>x[0]).sort((a,b)=>b-a)];return[0,...vals]}
