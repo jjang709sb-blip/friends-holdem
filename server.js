@@ -3,7 +3,11 @@ const http=require('http');
 const {Server}=require('socket.io');
 const crypto=require('crypto');
 const app=express(); app.use(express.static('public'));
-const server=http.createServer(app); const io=new Server(server); const rooms=new Map();
+const server=http.createServer(app);
+// V5.7: mobile calls/backgrounds can briefly stall the browser. Give Socket.IO a wider heartbeat window
+// so a short radio/audio interruption is not treated as a dead player.
+const io=new Server(server,{pingInterval:20000,pingTimeout:60000,connectTimeout:45000});
+const rooms=new Map();
 const START_BANK=200000, INITIAL_BUYIN=20000, SB=1000, BB=2000, UNIT=1000, GAME_MS=60*60*1000, TURN_MS=15000;
 const suits=['S','H','D','C'], ranks='23456789TJQKA';
 function makeDeck(){let d=suits.flatMap(s=>[...ranks].map(r=>r+s));for(let i=d.length-1;i>0;i--){let j=crypto.randomInt(i+1);[d[i],d[j]]=[d[j],d[i]]}return d}
@@ -54,5 +58,5 @@ io.on('connection',s=>{
  s.on('action',({type,amount},ack=()=>{})=>{let r=roomOfSocket(s.id);if(!r||r.turn<0||r.players[r.turn].socketId!==s.id)return ack({error:'내 차례가 아닙니다.'});let p=r.players[r.turn],call=Math.max(0,r.highest-p.bet);if(type==='fold'){p.fold=true;p.acted=true;markAction(r,p,'fold');note(r,p.name+' 폴드')}else if(type==='check'&&call===0){p.acted=true;markAction(r,p,'check');note(r,p.name+' 체크')}else if(type==='call'&&call>0){bet(r,r.turn,call);p.acted=true;markAction(r,p,'call');note(r,p.name+' 콜')}else if(type==='raise'||type==='allin'){let total=type==='allin'?p.bet+p.stack:Number(amount),max=p.bet+p.stack,min=r.highest+r.minRaise;if(!Number.isInteger(total)||total%UNIT!==0||total<=r.highest||total>max||(total<min&&total!==max))return ack({error:`최소 ${min.toLocaleString()}까지, 1,000 단위로 레이즈`});let previous=r.highest;bet(r,r.turn,total-p.bet);r.highest=p.bet;let size=r.highest-previous;if(size>=r.minRaise){r.minRaise=size;r.players.forEach(q=>{if(q.pid!==p.pid&&q.inHand&&!q.fold&&!q.allin)q.acted=false})}p.acted=true;markAction(r,p,type);note(r,type==='allin'?`🔥 ${p.name} 올인 ${total.toLocaleString()}`:`${p.name} ${total.toLocaleString()}까지 레이즈`)}else return ack({error:'잘못된 액션'});ack({ok:true});advance(r)});
  s.on('disconnect',()=>{let r=roomOfSocket(s.id);if(!r)return;let p=r.players.find(x=>x.socketId===s.id);if(!p)return;p.socketId=null;if(!r.players.some(x=>x.socketId))r.emptySince=Date.now();note(r,`${p.name} 연결 끊김 · 재접속 대기`);send(r)});
 });
-setInterval(()=>{for(const r of rooms.values()){if(r.endsAt){if(r.turn>=0&&r.turnDeadline&&Date.now()>=r.turnDeadline){let p=r.players[r.turn];if(p&&p.inHand&&!p.fold&&!p.allin){p.fold=true;p.acted=true;markAction(r,p,'timeout');note(r,`⏱️ ${p.name} 시간초과 · 자동 폴드`);advance(r);continue}}send(r);finishGameIfNeeded(r)}}},250);
+setInterval(()=>{for(const r of rooms.values()){if(r.endsAt){if(r.turn>=0&&r.turnDeadline&&Date.now()>=r.turnDeadline){let p=r.players[r.turn];if(p&&p.inHand&&!p.fold&&!p.allin){p.fold=true;p.acted=true;markAction(r,p,'timeout');note(r,`⏱️ ${p.name} 시간초과 · 자동 폴드`);advance(r);continue}}send(r);finishGameIfNeeded(r)}}},1000);
 server.listen(process.env.PORT||3000,()=>console.log('Friends Holdem on '+(process.env.PORT||3000)));
