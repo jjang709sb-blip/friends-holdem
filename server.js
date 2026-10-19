@@ -14,7 +14,7 @@ const io=new Server(server,{
   connectionStateRecovery:{maxDisconnectionDuration:5*60*1000,skipMiddlewares:true}
 });
 const rooms=new Map();
-const START_BANK=200000, INITIAL_BUYIN=50000, SB=1000, BB=2000, UNIT=1000, GAME_MS=30*60*1000, TURN_MS=15000, NEXT_HAND_MS=7000, BLIND_LEVEL_MS=5*60*1000;
+const START_BANK=200000, INITIAL_BUYIN=50000, SB=1000, BB=2000, UNIT=1000, GAME_MS=30*60*1000, TURN_MS=17000, NEXT_HAND_MS=8000, BLIND_LEVEL_MS=5*60*1000;
 function sessionBlinds(r){const started=r.startedAt||(r.endsAt?r.endsAt-GAME_MS:Date.now());const level=Math.max(0,Math.min(5,Math.floor((Date.now()-started)/BLIND_LEVEL_MS)));const mult=2**level;return [SB*mult,BB*mult]}
 function handBlinds(r){return [r.handSB||SB,r.handBB||BB]}
 const REBUY_AMOUNTS=[10000,20000,30000,40000,50000,60000,70000,80000,90000,100000];
@@ -28,7 +28,8 @@ function cmp(a,b){
   if(!Array.isArray(b))return 1;
   for(let i=0;i<Math.max(a.length,b.length);i++){let x=(a[i]||0)-(b[i]||0);if(x)return Math.sign(x)}return 0
 }
-function best(cards){let b=null;for(let a=0;a<cards.length-4;a++)for(let c=a+1;c<cards.length-3;c++)for(let d=c+1;d<cards.length-2;d++)for(let e=d+1;e<cards.length-1;e++)for(let f=e+1;f<cards.length;f++){let s=score5([cards[a],cards[c],cards[d],cards[e],cards[f]]);if(!b||cmp(s,b)>0)b=s}return b}
+function bestDetail(cards){let b=null,bc=[];for(let a=0;a<cards.length-4;a++)for(let c=a+1;c<cards.length-3;c++)for(let d=c+1;d<cards.length-2;d++)for(let e=d+1;e<cards.length-1;e++)for(let f=e+1;f<cards.length;f++){let five=[cards[a],cards[c],cards[d],cards[e],cards[f]],sc=score5(five);if(!b||cmp(sc,b)>0){b=sc;bc=five}}return{score:b,cards:bc}}
+function best(cards){return bestDetail(cards).score}
 const handName=s=>['하이카드','원페어','투페어','트리플','스트레이트','플러시','풀하우스','포카드','스트레이트 플러시'][s?.[0]??0];
 const active=r=>r.players.filter(p=>p.inHand&&!p.fold), eligible=r=>active(r).filter(p=>p.stack>0&&!p.allin);
 function next(r,from,fn){for(let n=1;n<=r.players.length;n++){let i=(from+n)%r.players.length;if(fn(r.players[i]))return i}return -1}
@@ -54,7 +55,7 @@ function finish(r){
  let winnerPlayers=contenders.filter(p=>(won.get(p.pid)||0)>0);
  r.showdownReveal=isShowdown?contenders.map(p=>p.pid):[];
  r.resultEndsAt=Date.now()+NEXT_HAND_MS;
- r.showdown={at:Date.now(),showdown:isShowdown,pot:totalPot,winners:winnerPlayers.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),players:isShowdown?contenders.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:handName(scores.get(p.pid)),winner:(won.get(p.pid)||0)>0})):[]};
+ r.showdown={at:Date.now(),showdown:isShowdown,pot:totalPot,winners:winnerPlayers.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),players:isShowdown?contenders.map(p=>{const detail=bestDetail([...(Array.isArray(p.cards)?p.cards:[]),...(Array.isArray(r.board)?r.board:[])]);return{pid:p.pid,name:p.name,cards:p.cards,hand:handName(scores.get(p.pid)),winner:(won.get(p.pid)||0)>0,bestCards:detail.cards}}):[]};
  if(winnerPlayers.length)note(r,`🏆 ${winnerPlayers.map(p=>p.name).join(', ')} 승리 · ${winnerPlayers.map(p=>handName(scores.get(p.pid))).join('/')}`);
  r.street='done';r.turn=-1;r.turnDeadline=null;r.highest=0;send(r);if(!finishGameIfNeeded(r))scheduleNext(r,NEXT_HAND_MS)
 }
