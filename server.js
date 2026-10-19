@@ -31,6 +31,8 @@ function cmp(a,b){
 function bestDetail(cards){let b=null,bc=[];for(let a=0;a<cards.length-4;a++)for(let c=a+1;c<cards.length-3;c++)for(let d=c+1;d<cards.length-2;d++)for(let e=d+1;e<cards.length-1;e++)for(let f=e+1;f<cards.length;f++){let five=[cards[a],cards[c],cards[d],cards[e],cards[f]],sc=score5(five);if(!b||cmp(sc,b)>0){b=sc;bc=five}}return{score:b,cards:bc}}
 function best(cards){return bestDetail(cards).score}
 const handName=s=>['하이카드','원페어','투페어','트리플','스트레이트','플러시','풀하우스','포카드','스트레이트 플러시'][s?.[0]??0];
+const rankText=v=>v===14?'A':v===13?'K':v===12?'Q':v===11?'J':v===10?'10':String(v||'');
+function handLabel(s){if(!Array.isArray(s))return '승리';const n=handName(s),k=s[0];if(k===1)return rankText(s[1])+' 원페어';if(k===2)return rankText(s[1])+'·'+rankText(s[2])+' 투페어';if(k===3)return rankText(s[1])+' 트리플';if(k===4)return rankText(s[1])+' 스트레이트';if(k===5)return rankText(s[1])+' 하이 플러시';if(k===6)return rankText(s[1])+' 풀하우스';if(k===7)return rankText(s[1])+' 포카드';if(k===8)return rankText(s[1])+' 스트레이트 플러시';return rankText(s[1])+' 하이'}
 const active=r=>r.players.filter(p=>p.inHand&&!p.fold), eligible=r=>active(r).filter(p=>p.stack>0&&!p.allin);
 function next(r,from,fn){for(let n=1;n<=r.players.length;n++){let i=(from+n)%r.players.length;if(fn(r.players[i]))return i}return -1}
 function note(r,s){r.log.push(s);if(r.log.length>100)r.log.shift()}
@@ -55,7 +57,7 @@ function finish(r){
  let winnerPlayers=contenders.filter(p=>(won.get(p.pid)||0)>0);
  r.showdownReveal=isShowdown?contenders.map(p=>p.pid):[];
  r.resultEndsAt=Date.now()+NEXT_HAND_MS;
- r.showdown={at:Date.now(),showdown:isShowdown,pot:totalPot,winners:winnerPlayers.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),players:isShowdown?contenders.map(p=>{const detail=bestDetail([...(Array.isArray(p.cards)?p.cards:[]),...(Array.isArray(r.board)?r.board:[])]);return{pid:p.pid,name:p.name,cards:p.cards,hand:handName(scores.get(p.pid)),winner:(won.get(p.pid)||0)>0,bestCards:detail.cards}}):[]};
+ r.showdown={at:Date.now(),showdown:isShowdown,pot:totalPot,winners:winnerPlayers.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',label:isShowdown?handLabel(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),players:isShowdown?contenders.map(p=>{const detail=bestDetail([...(Array.isArray(p.cards)?p.cards:[]),...(Array.isArray(r.board)?r.board:[])]);return{pid:p.pid,name:p.name,cards:p.cards,hand:handName(scores.get(p.pid)),label:handLabel(scores.get(p.pid)),winner:(won.get(p.pid)||0)>0,bestCards:detail.cards}}):[]};
  if(winnerPlayers.length)note(r,`🏆 ${winnerPlayers.map(p=>p.name).join(', ')} 승리 · ${winnerPlayers.map(p=>handName(scores.get(p.pid))).join('/')}`);
  r.street='done';r.turn=-1;r.turnDeadline=null;r.highest=0;send(r);if(!finishGameIfNeeded(r))scheduleNext(r,NEXT_HAND_MS)
 }
