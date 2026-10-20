@@ -1,10 +1,16 @@
 {
+  "id": "/",
   "name": "친구들 홀덤",
   "short_name": "친구들 홀덤",
-  "start_url": "/",
+  "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#08090b",
   "theme_color": "#08090b",
-  "description": "친구들과 즐기는 프라이빗 홀덤"
+  "description": "친구들과 즐기는 프라이빗 홀덤",
+  "icons": [
+    {"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
 }
