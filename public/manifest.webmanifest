@@ -1,0 +1,10 @@
+{
+  "name": "친구들 홀덤",
+  "short_name": "친구들 홀덤",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#08090b",
+  "theme_color": "#08090b",
+  "description": "친구들과 즐기는 프라이빗 홀덤"
+}
