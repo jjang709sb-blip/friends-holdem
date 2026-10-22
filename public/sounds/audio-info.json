@@ -1,0 +1,56 @@
+{
+  "voice": "New Kokoro v1.0 neural synthesis, 75% am_fenrir + 25% am_onyx",
+  "music": "Original procedural composition, 80 BPM, 24-second loop",
+  "samples": [
+    {
+      "file": "one-pair.mp3",
+      "duration": 1.45,
+      "peakDb": -3.45
+    },
+    {
+      "file": "two-pair.mp3",
+      "duration": 1.45,
+      "peakDb": -3.92
+    },
+    {
+      "file": "three-of-a-kind.mp3",
+      "duration": 1.689,
+      "peakDb": -3.61
+    },
+    {
+      "file": "straight.mp3",
+      "duration": 1.53,
+      "peakDb": -3.65
+    },
+    {
+      "file": "flush.mp3",
+      "duration": 1.53,
+      "peakDb": -3.31
+    },
+    {
+      "file": "full-house.mp3",
+      "duration": 1.612,
+      "peakDb": -3.7
+    },
+    {
+      "file": "four-of-a-kind.mp3",
+      "duration": 1.825,
+      "peakDb": -3.2
+    },
+    {
+      "file": "straight-flush.mp3",
+      "duration": 1.791,
+      "peakDb": -2.75
+    },
+    {
+      "file": "royal-flush.mp3",
+      "duration": 1.834,
+      "peakDb": -2.75
+    },
+    {
+      "file": "table-night.mp3",
+      "duration": 24.0,
+      "peakDb": -4.44
+    }
+  ]
+}
