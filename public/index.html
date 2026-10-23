@@ -1119,10 +1119,9 @@ setInterval(drawChatPreview,300);
 function showActionImpact(type){
  document.querySelectorAll('.actionImpact').forEach(el=>el.remove());
  const max=type==='max',el=document.createElement('div');el.className='actionImpact'+(max?' max':'');el.setAttribute('aria-hidden','true');
- const title=document.createElement('strong'),tag=document.createElement('small'),actor=document.createElement('span');
- title.textContent=max?'MAX':'ALL-IN';tag.textContent=max?'한도까지 간다':'승부를 건다';actor.className='impactActor';
- const action=state?.lastAction,player=state?.players.find(p=>p.pid===action?.pid);actor.textContent=action?.type===type&&player?player.name+' · '+fmt(player.contrib||action.amount||0):'';
- el.append(title,tag,actor);document.body.append(el);const table=document.querySelector('.table').getBoundingClientRect();if(table.height)el.style.top=(table.top+table.height*.40)+'px';
+ const title=document.createElement('strong'),tag=document.createElement('small');
+ title.textContent=max?'MAX':'ALL-IN';tag.textContent=max?'한도까지 간다':'승부를 건다';
+ el.append(title,tag);document.body.append(el);const table=document.querySelector('.table').getBoundingClientRect();if(table.height)el.style.top=(table.top+table.height*.32)+'px';
  setTimeout(()=>el.remove(),1450);
 }
 
