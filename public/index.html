@@ -799,7 +799,7 @@ const RANK_AUDIO={'ONE PAIR':'one-pair','TWO PAIR':'two-pair','THREE OF A KIND':
 const rankBuffers=new Map(),rankNodes=new Set(),rankPlayed=new Set();let rankGain=null,musicAudio=null,musicDuckUntil=0;
 function rankBuffer(slug){
  if(!synthContext)return Promise.resolve(null);
- if(!rankBuffers.has(slug))rankBuffers.set(slug,fetch('/sounds/ranks/'+slug+'.mp3').then(r=>{if(!r.ok)throw Error('Rank audio '+r.status);return r.arrayBuffer()}).then(b=>synthContext.decodeAudioData(b)).catch(()=>{rankBuffers.delete(slug);return null}));
+ if(!rankBuffers.has(slug))rankBuffers.set(slug,fetch('/sounds/'+slug+'.mp3').then(r=>{if(!r.ok)throw Error('Rank audio '+r.status);return r.arrayBuffer()}).then(b=>synthContext.decodeAudioData(b)).catch(()=>{rankBuffers.delete(slug);return null}));
  return rankBuffers.get(slug);
 }
 function prepareGameAudio(){
@@ -827,7 +827,7 @@ function syncMusic(){
  const button=$('musicToggle'),on=localStorage.holdem_music!=='0';button.textContent=on?'♫':'♫×';button.setAttribute('aria-pressed',String(on));button.setAttribute('aria-label',on?'배경음 끄기':'배경음 켜기');button.title=on?'배경음 켜짐':'배경음 꺼짐';
  if(!musicAllowed()){musicAudio?.pause();return}
  if(!synthContext||synthContext.state!=='running')return;
- if(!musicAudio){musicAudio=new Audio('/sounds/ranks/table-night.mp3');musicAudio.loop=true;musicAudio.preload='auto';musicAudio.volume=.10}
+ if(!musicAudio){musicAudio=new Audio('/sounds/table-night.mp3');musicAudio.loop=true;musicAudio.preload='auto';musicAudio.volume=.10}
  if(musicAudio.paused&&!musicAudio._starting){musicAudio._starting=true;musicAudio.play().catch(()=>{}).finally(()=>musicAudio._starting=false)}
 }
 function toggleMusic(){localStorage.holdem_music=localStorage.holdem_music==='0'?'1':'0';unlockSynth();syncMusic()}
