@@ -104,11 +104,18 @@ function finish(r){
 // Server-owned presentation milestones. Acknowledgements never advance the clock.
 function presentationPlan(r,base,runout){
  const start=Date.now()+1400,cinematic=runout&&base===0;
- const t={id:r.handId,version:1,baseCount:base,cinematic,showdownStartAt:start,
+ const t={id:r.handId,version:2,baseCount:base,cinematic,showdownStartAt:start,
  flopRevealAt:base>=3?start:start+2600,turnRevealAt:base>=4?start:start+3500,
  riverRevealAt:base>=5?start:start+4400};
- t.riverCompleteAt=base>=5?start+2600:t.riverRevealAt+(cinematic?1450:500);
- t.resultRevealAt=Math.max(start+2600,t.riverCompleteAt+450);
+ if(cinematic){
+  // Absolute visual beats; prebuffered payloads never wait for an animation ACK.
+  t.cardRevealAts=[start+2600,start+2880,start+3180,start+3520];
+  t.flopRevealAt=t.cardRevealAts[0];t.turnRevealAt=t.cardRevealAts[3];t.riverRevealAt=start+4150;
+  t.riverPeekAt=t.riverRevealAt+850;t.riverPauseEndAt=t.riverRevealAt+1030;
+  t.riverFaceAt=t.riverRevealAt+1850;t.riverFlyAt=t.riverRevealAt+2050;t.riverLandAt=t.riverRevealAt+2550;
+ }
+ t.riverCompleteAt=base>=5?start+2600:t.riverRevealAt+(cinematic?2700:500);
+ t.resultRevealAt=Math.max(start+2600,t.riverCompleteAt+(cinematic?600:450));
  t.sweepAt=t.resultRevealAt+2000;t.collectAt=t.resultRevealAt+2800;t.settleAt=t.resultRevealAt+4200;t.presentationCompleteAt=t.resultRevealAt+4700;
  return t;
 }
