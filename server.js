@@ -109,12 +109,14 @@ function presentationPlan(r,base,runout){
  riverRevealAt:base>=5?start:start+4400};
  if(cinematic){
   // Absolute visual beats; prebuffered payloads never wait for an animation ACK.
-  t.cardRevealAts=[start+2600,start+2880,start+3180,start+3520];
-  t.flopRevealAt=t.cardRevealAts[0];t.turnRevealAt=t.cardRevealAts[3];t.riverRevealAt=start+4150;
-  t.riverPeekAt=t.riverRevealAt+850;t.riverPauseEndAt=t.riverRevealAt+1030;
-  t.riverFaceAt=t.riverRevealAt+1850;t.riverFlyAt=t.riverRevealAt+2050;t.riverLandAt=t.riverRevealAt+2550;
+  // V7.14.1: keep the overall showdown length, but give FLOP/TURN room to breathe.
+  // 700ms between the first four cards; the river cinematic is compressed instead.
+  t.cardRevealAts=[start+2600,start+3300,start+4000,start+4700];
+  t.flopRevealAt=t.cardRevealAts[0];t.turnRevealAt=t.cardRevealAts[3];t.riverRevealAt=start+5300;
+  t.riverPeekAt=t.riverRevealAt+450;t.riverPauseEndAt=t.riverRevealAt+720;
+  t.riverFaceAt=t.riverRevealAt+1120;t.riverFlyAt=t.riverRevealAt+1270;t.riverLandAt=t.riverRevealAt+1500;
  }
- t.riverCompleteAt=base>=5?start+2600:t.riverRevealAt+(cinematic?2700:500);
+ t.riverCompleteAt=base>=5?start+2600:t.riverRevealAt+(cinematic?1550:500);
  t.resultRevealAt=Math.max(start+2600,t.riverCompleteAt+(cinematic?600:450));
  t.sweepAt=t.resultRevealAt+2000;t.collectAt=t.resultRevealAt+2800;t.settleAt=t.resultRevealAt+4200;t.presentationCompleteAt=t.resultRevealAt+4700;
  return t;
