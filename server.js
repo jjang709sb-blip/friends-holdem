@@ -224,13 +224,23 @@ function leagueValidation(c){
  return {valid:delta===0,total,sum,delta,error:delta<0?`${-delta}만원을 더 배분해주세요.`:delta>0?`${delta}만 초과했습니다.`:null};
 }
 function leagueSyncMembers(r){const l=r.league;if(!l)return;
- for(const p of r.players){if(p.departed)continue;let row=l.ledger[p.pid];if(!row){row=l.ledger[p.pid]={pid:p.pid,name:p.name,token:p.token,points:0,games:0};l.ledgerVersion++}row.name=p.name;}
+ for(const p of r.players){if(p.departed)continue;let row=l.ledger[p.pid];if(!row&&p.spectator)continue;if(!row){row=l.ledger[p.pid]={pid:p.pid,name:p.name,token:p.token,points:0,games:0};l.ledgerVersion++}row.name=p.name;}
  if(l.phase==='consent'&&!leagueSame(l.proposalIds,leagueIds(r))){l.phase='invalid';l.approvals=[];l.proposalIds=[];l.version++;l.notice='참가 인원이 변경되었습니다. 정산 설정을 다시 맞춰주세요.';}
+}
+// V7.15.1: observer visits are not settlement participation. Keep historical data
+// intact; omit legacy zero-game visitors from the displayed cumulative table.
+function leagueHasParticipation(r,pid){
+ const l=r.league,row=l?.ledger[pid];
+ return !!(row?.hasParticipated||row?.games||row?.points||
+  r.leagueGame?.participants.some(p=>p.pid===pid)||
+  l?.pendingSettlement?.players.some(p=>p.pid===pid)||
+  l?.history.some(g=>g.players?.some(p=>p.pid===pid)));
 }
 // Same room nickname is the settlement display identity; original IDs/history stay intact.
 function leagueTotals(r){
  const groups=new Map();
  for(const row of Object.values(r.league?.ledger||{})){
+  if(!leagueHasParticipation(r,row.pid)&&!leagueMembers(r).some(p=>p.pid===row.pid&&!p.spectator))continue;
   const key=String(row.name).normalize('NFC').trim();
   let total=groups.get(key);if(!total){total={pid:row.pid,name:key,points:0,games:0,left:true};groups.set(key,total)}
   total.points+=row.points;total.games+=row.games;
@@ -246,7 +256,14 @@ function leagueStartError(r){const l=r.league;if(!l)return null;if(l.pendingSett
  if(!leagueSame(l.approvedIds,leagueIds(r)))return '참가자가 변경되었습니다. 정산 설정에서 다시 전원 확인을 받아주세요.';
  return leagueValidation(l.active).valid?null:'정산 금액 설정을 다시 확인해주세요.';
 }
-function leagueSnapshot(r){if(r.league?.pendingSettlement)throw new Error('Pending settlement blocks new game');r.leagueGame=null;if(!r.league?.active)return;const l=r.league;r.leagueGame={id:crypto.randomBytes(12).toString('hex'),version:l.active.version,config:leagueCopy(l.active),participants:leagueMembers(r).map(p=>({pid:p.pid,name:p.name})),startedAt:Date.now(),settlementStatus:null};r.leagueGame.gameId=r.leagueGame.id;}
+function leagueSnapshot(r){if(r.league?.pendingSettlement)throw new Error('Pending settlement blocks new game');r.leagueGame=null;if(!r.league?.active)return;const l=r.league;
+// start() promotes these confirmed members into this session immediately after
+// snapshot. Register former spectators now, not during their observer visits.
+for(const p of leagueMembers(r)){
+ let row=l.ledger[p.pid];if(!row){row=l.ledger[p.pid]={pid:p.pid,name:p.name,token:p.token,points:0,games:0};l.ledgerVersion++}
+ row.hasParticipated=true;
+}
+r.leagueGame={id:crypto.randomBytes(12).toString('hex'),version:l.active.version,config:leagueCopy(l.active),participants:leagueMembers(r).map(p=>({pid:p.pid,name:p.name})),startedAt:Date.now(),settlementStatus:null};r.leagueGame.gameId=r.leagueGame.id;}
 function leagueSettle(r){const g=r.leagueGame,l=r.league;if(!g||g.settlementStatus||!l)return;
  if(l.pendingSettlement){l.error='이전 게임의 정산 반영 여부를 먼저 선택해주세요.';return}
  const rows=g.participants.map(p=>{const rank=r.finalRanking.find(x=>x.pid===p.pid)?.rank;return {...p,rank,acquired:g.config.awards[rank-1],bet:g.config.bet}});
