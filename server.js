@@ -56,7 +56,7 @@ function markAction(r,p,type){r.actionSeq=(r.actionSeq||0)+1;p.lastMove={type,at
 function send(r){
  queuePreAction(r);leagueBroadcast(r);
  const visible=r.players.filter(x=>!x.departed), pubIndex=old=>{if(old==null||old<0)return -1;const target=r.players[old];return target?visible.indexOf(target):-1};
- for(const p of visible){if(!p.socketId)continue;const reveal=new Set(r.showdownReveal||[]);const pub=visible.map((x,i)=>({pid:x.pid,name:x.name,stack:x.stack,bank:x.bank,fold:x.fold,inHand:x.inHand,allin:x.allin,capped:!!x.capped,bet:x.bet,contrib:x.contrib,seat:i,cards:(x.pid===p.pid||reveal.has(x.pid))?x.cards:null,cardsPublic:reveal.has(x.pid),manualReveal:x.manualRevealHandId===r.handId,waitingForNextHand:!!r.startedAt&&!x.inHand&&!x.departed,connected:!!x.socketId,total:x.stack+x.bank,spectator:!!x.spectator,finalRank:x.finalRank||null,eliminatedHandId:x.eliminatedHandId||null,lastMove:x.lastMove||null,rebuyAvailable:!!x.rebuyEligible&&x.stack===0,rebuyHandId:x.rebuyHandId||null,rebuyDeadline:x.rebuyDeadline||null}));const blindMs=roomBlindLevelMs(r);io.to(p.socketId).emit('state',{code:r.code,roomName:r.roomName,runoutBoard:r.runoutBoard||null,presentationTimeline:r.presentationTimeline||null,preAction:p.preAction&&p.preAction.handId===r.handId?p.preAction.type:null,features:{league:1,timeline:1,chat:1,reactions:1,presentation:1,autoRebuy:1,maxBet:1,idleExit:1},handMaxBet:handCap(r),idleExpiresAt:(p.lastActivityAt||Date.now())+IDLE_MS,presentationExpiresAt:r.showdown?r.showdown.at+RESULT_PRESENTATION_MS:null,handId:r.handId||null,settlementComplete:!!r.settlementComplete,turnStartedAt:r.turnStartedAt||null,turnDurationMs:TURN_MS,players:pub,board:r.board,street:r.street,pot:r.players.reduce((s,x)=>s+x.contrib,0),button:pubIndex(r.button),sbIndex:pubIndex(r.sbIndex),bbIndex:pubIndex(r.bbIndex),turn:pubIndex(r.turn),highest:r.highest,minRaise:r.minRaise,log:r.log.slice(-18),you:p.pid,host:r.hostPid,canStart:['waiting','done'].includes(r.street)&&!r.startedAt,blinds:handBlinds(r),nextBlinds:sessionBlinds(r),timeLeft:timeLeft(r),serverNow:Date.now(),sessionEndsAt:r.endsAt,started:!!r.startedAt,settings:r.settings,durationLabel:durationLabel(r),gameOver:r.gameOver,turnDeadline:r.turnDeadline,lastAction:r.lastAction,nextHandAt:r.nextHandAt,showdown:r.showdown||null,resultEndsAt:r.resultEndsAt||null,sessionResultId:r.sessionResultId||null,finalRanking:r.finalRanking||null,sessionSeatOrder:(r.sessionSeatOrder||[]).filter(id=>visible.some(x=>x.pid===id)),blindLevelMs:blindMs,nextBlindAt:(r.startedAt&&blindMs)?r.startedAt+(Math.floor((Date.now()-r.startedAt)/blindMs)+1)*blindMs:null})}}
+ for(const p of visible){if(!p.socketId)continue;const reveal=new Set(r.showdownReveal||[]);const pub=visible.map((x,i)=>({pid:x.pid,name:x.name,stack:x.stack,bank:x.bank,fold:x.fold,inHand:x.inHand,allin:x.allin,capped:!!x.capped,bet:x.bet,contrib:x.contrib,seat:i,cards:(x.pid===p.pid||reveal.has(x.pid))?x.cards:null,cardsPublic:reveal.has(x.pid),manualReveal:x.manualRevealHandId===r.handId,waitingForNextHand:!!r.startedAt&&!x.inHand&&!x.departed,connected:!!x.socketId,total:x.stack+x.bank,spectator:!!x.spectator,finalRank:x.finalRank||null,eliminatedHandId:x.eliminatedHandId||null,lastMove:x.lastMove||null,rebuyAvailable:!!x.rebuyEligible&&x.stack===0,rebuyHandId:x.rebuyHandId||null,rebuyDeadline:x.rebuyDeadline||null}));const blindMs=roomBlindLevelMs(r);io.to(p.socketId).emit('state',{connectionId:p.socketId,code:r.code,roomName:r.roomName,runoutBoard:r.runoutBoard||null,presentationTimeline:r.presentationTimeline||null,preAction:p.preAction&&p.preAction.handId===r.handId?p.preAction.type:null,features:{league:1,timeline:1,chat:1,reactions:1,presentation:1,autoRebuy:1,maxBet:1,idleExit:1},handMaxBet:handCap(r),idleExpiresAt:(p.lastActivityAt||Date.now())+IDLE_MS,presentationExpiresAt:r.showdown?r.showdown.at+RESULT_PRESENTATION_MS:null,handId:r.handId||null,settlementComplete:!!r.settlementComplete,turnStartedAt:r.turnStartedAt||null,turnDurationMs:TURN_MS,players:pub,board:r.board,street:r.street,pot:r.players.reduce((s,x)=>s+x.contrib,0),button:pubIndex(r.button),sbIndex:pubIndex(r.sbIndex),bbIndex:pubIndex(r.bbIndex),turn:pubIndex(r.turn),highest:r.highest,minRaise:r.minRaise,log:r.log.slice(-18),you:p.pid,host:r.hostPid,canStart:['waiting','done'].includes(r.street)&&!r.startedAt,blinds:handBlinds(r),nextBlinds:sessionBlinds(r),timeLeft:timeLeft(r),serverNow:Date.now(),sessionEndsAt:r.endsAt,started:!!r.startedAt,settings:r.settings,durationLabel:durationLabel(r),gameOver:r.gameOver,turnDeadline:r.turnDeadline,lastAction:r.lastAction,nextHandAt:r.nextHandAt,showdown:r.showdown||null,resultEndsAt:r.resultEndsAt||null,sessionResultId:r.sessionResultId||null,finalRanking:r.finalRanking||null,sessionSeatOrder:(r.sessionSeatOrder||[]).filter(id=>visible.some(x=>x.pid===id)),blindLevelMs:blindMs,nextBlindAt:(r.startedAt&&blindMs)?r.startedAt+(Math.floor((Date.now()-r.startedAt)/blindMs)+1)*blindMs:null})}}
 
 function eliminatePlayers(r,players,reason='bust'){
  if(!r.sessionRoster)return;
@@ -147,6 +147,8 @@ function roomPlayerForSocket(s){
   const r=roomOfSocket(s.id),p=r?.players.find(x=>x.socketId===s.id);return r&&p?{r,p}:null
 }
 function bindSocket(r,p,s){
+  const old=p.socketId&&p.socketId!==s.id?io.sockets.sockets.get(p.socketId):null;
+  if(old){old.leave(r.code);old.data.roomCode=null;old.data.pid=null;old.emit('session-replaced',{message:'같은 좌석이 다른 창에서 연결되었습니다. 이 창은 대기실로 이동합니다.'})}
   // A reconnect replaces only this player's old connection. Never let a stale socket clear the new one.
   if(!Number.isFinite(p.lastActivityAt))touchActivity(p);p.disconnectedAt=null;p.socketId=s.id;s.data.roomCode=r.code;s.data.pid=p.pid;s.join(r.code);r.emptySince=null;
 }
@@ -192,13 +194,34 @@ function tickAutoRebuy(r){
 }
 // Room-local league. Poker sessions, not individual hands, produce one entry.
 const LEAGUE_POINT_MAX=1000000;
+function applyPokerAction(s,{type,amount},ack=()=>{}){
+ const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
+ if(!r||!p||r.turn<0||r.players[r.turn]!==p||!canAct(r,p))return ack({error:'내 차례가 아닙니다.'});
+ const call=Math.max(0,r.highest-p.bet),available=availableBet(r,p),max=p.bet+available,min=r.highest+r.minRaise;
+ if(type==='allin'&&available<p.stack)return ack({error:'MAX 베팅 상한입니다. MAX 버튼을 사용하세요.'});
+ const chosenMax=type==='max';
+ if(chosenMax)type=available===p.stack?'allin':'max';
+ if(type==='fold'){p.fold=true;p.acted=true;markAction(r,p,'fold');note(r,p.name+' 폴드')}
+ else if(type==='check'&&call===0){p.acted=true;markAction(r,p,'check');note(r,p.name+' 체크')}
+ else if(type==='call'&&call>0){bet(r,r.turn,call);p.acted=true;markAction(r,p,p.allin?'allin':p.capped?'max':'call');note(r,p.name+(p.allin?' 올인 콜':p.capped?' MAX 콜':' 콜'))}
+ else if((type==='allin'||type==='max')&&max<=r.highest){bet(r,r.turn,available);p.acted=true;markAction(r,p,type);note(r,`${p.name} ${type==='max'?'MAX':'올인'} ${max.toLocaleString()}`)}
+ else if(type==='raise'||type==='allin'||type==='max'){
+  const total=type==='raise'?Number(amount):max;
+  if(!Number.isSafeInteger(total)||total%UNIT!==0||total<=r.highest||total>max||(total<min&&total!==max))return ack({error:`레이즈는 ${Math.min(min,max).toLocaleString()}~${max.toLocaleString()}까지, 1,000 단위입니다.`});
+  const previous=r.highest;bet(r,r.turn,total-p.bet);r.highest=p.bet;const size=r.highest-previous;
+  if(size>=r.minRaise){r.minRaise=size;r.players.forEach(q=>{if(q!==p&&canAct(r,q))q.acted=false})}
+  p.acted=true;const actual=p.allin?'allin':p.capped?'max':'raise';markAction(r,p,actual);
+  note(r,`${p.name} ${actual==='allin'?'올인':actual==='max'?'MAX':'레이즈'} ${total.toLocaleString()}`);
+ }else return ack({error:'잘못된 액션'});
+ ack({ok:true});advance(r);
+ }
 function queuePreAction(r){
  const p=r.players[r.turn],q=p?.preAction;if(!q)return;
  if(q.handId!==r.handId||!canAct(r,p)){p.preAction=null;return}
  if(!p.socketId||p.preActionQueued)return;p.preActionQueued=true;
  setTimeout(()=>{p.preActionQueued=false;if(p.preAction!==q||r.handId!==q.handId||r.players[r.turn]!==p||!canAct(r,p))return;
  const sock=io.sockets.sockets.get(p.socketId);if(!sock)return;p.preAction=null;
- const handler=sock.listeners('action')[0];if(handler)handler({type:q.type},result=>{if(result?.error)send(r)});
+ applyPokerAction(sock,{type:q.type},result=>{if(result?.error)send(r)});
  },0);
 }
 function removeMember(r,p,reason){
@@ -218,14 +241,14 @@ function leagueDefault(n){return {count:n,bet:1,awards:Array.from({length:9},(_,
 function leagueEnsure(r){if(!r.league)r.league={phase:'editing',version:1,draft:leagueDefault(Math.max(2,leagueMembers(r).length)),active:null,approvals:[],proposalIds:[],approvedIds:[],presets:{},ledger:{},history:[],pendingSettlement:null,decisions:{},ledgerVersion:0,activation:0,notice:null};leagueSyncMembers(r);return r.league}
 function leagueValidation(c){
  if(!c||!Number.isInteger(c.count)||c.count<2||c.count>9)return {valid:false,error:'참가 인원을 2~9명으로 선택해주세요.'};
- if(!Number.isSafeInteger(c.bet)||c.bet<1||c.bet>LEAGUE_POINT_MAX)return {valid:false,error:'기본 투입금은 1~1,000,000만의 정수로 입력해주세요.'};
+ if(!Number.isSafeInteger(c.bet)||c.bet<1||c.bet>LEAGUE_POINT_MAX)return {valid:false,error:'참가비은 1~1,000,000만의 정수로 입력해주세요.'};
  if(!Array.isArray(c.awards)||c.awards.length!==9||c.awards.slice(0,c.count).some(v=>!Number.isSafeInteger(v)||v<0||v>9*LEAGUE_POINT_MAX))return {valid:false,error:'활성 순위의 순위별 획득금를 0 이상의 정수로 입력해주세요.'};
  const total=c.count*c.bet,sum=c.awards.slice(0,c.count).reduce((a,b)=>a+b,0),delta=sum-total;
  return {valid:delta===0,total,sum,delta,error:delta<0?`${-delta}만원을 더 배분해주세요.`:delta>0?`${delta}만 초과했습니다.`:null};
 }
 function leagueSyncMembers(r){const l=r.league;if(!l)return;
  for(const p of r.players){if(p.departed)continue;let row=l.ledger[p.pid];if(!row&&p.spectator)continue;if(!row){row=l.ledger[p.pid]={pid:p.pid,name:p.name,token:p.token,points:0,games:0};l.ledgerVersion++}row.name=p.name;}
- if(l.phase==='consent'&&!leagueSame(l.proposalIds,leagueIds(r))){l.phase='invalid';l.approvals=[];l.proposalIds=[];l.version++;l.notice='참가 인원이 변경되었습니다. 정산 설정을 다시 맞춰주세요.';}
+ if(l.phase==='consent'&&!leagueSame(l.proposalIds,leagueIds(r))){l.phase='invalid';l.approvals=[];l.proposalIds=[];l.version++;l.notice='참가 인원이 변경되었습니다. 토너먼트 설정을 다시 맞춰주세요.';}
 }
 // V7.15.1: observer visits are not settlement participation. Keep historical data
 // intact; omit legacy zero-game visitors from the displayed cumulative table.
@@ -251,9 +274,9 @@ function leagueTotals(r){
 function leaguePublic(r){const l=r.league;return {code:r.code,host:r.hostPid,members:leagueMembers(r).map(p=>({pid:p.pid,name:p.name})),phase:l?.phase||'off',version:l?.version||0,active:l?.active||null,draft:l?.draft||null,validation:leagueValidation(l?.draft),approvals:l?.approvals||[],proposalIds:l?.proposalIds||[],activation:l?.activation||0,notice:l?.notice||null,error:l?.error||null,presets:l?.presets||{},ledgerVersion:l?.ledgerVersion||0,ledger:leagueTotals(r),history:l?.history||[],pendingSettlement:l?.pendingSettlement||null,currentGame:r.leagueGame?{id:r.leagueGame.id,version:r.leagueGame.version,config:r.leagueGame.config,finished:!!r.leagueGame.settlementStatus,status:r.leagueGame.settlementStatus||'running'}:null};}
 function leagueBroadcast(r){leagueSyncMembers(r);const payload=leaguePublic(r),key=JSON.stringify(payload);for(const p of leagueMembers(r)){const sock=io.sockets.sockets.get(p.socketId);if(sock&&sock.data.leagueSent!==key){sock.data.leagueSent=key;sock.emit('league:state',payload)}}}
 function leagueStartError(r){const l=r.league;if(!l)return null;if(l.pendingSettlement)return '이전 게임의 정산 반영 여부를 먼저 선택해주세요.';leagueSyncMembers(r);
- if(l.phase!=='idle'||!l.active)return '정산 설정을 확정하고 참가자 전원이 확인해야 게임을 시작할 수 있습니다.';
- if(l.active.count!==leagueMembers(r).length)return `정산 설정과 현재 참가 인원이 다릅니다. 정산 ${l.active.count}인 / 현재 ${leagueMembers(r).length}인. 정산 설정을 다시 맞춰주세요.`;
- if(!leagueSame(l.approvedIds,leagueIds(r)))return '참가자가 변경되었습니다. 정산 설정에서 다시 전원 확인을 받아주세요.';
+ if(l.phase!=='idle'||!l.active)return '토너먼트 설정을 확정하고 참가자 전원이 확인해야 게임을 시작할 수 있습니다.';
+ if(l.active.count!==leagueMembers(r).length)return `토너먼트 설정과 현재 참가 인원이 다릅니다. 정산 ${l.active.count}인 / 현재 ${leagueMembers(r).length}인. 토너먼트 설정을 다시 맞춰주세요.`;
+ if(!leagueSame(l.approvedIds,leagueIds(r)))return '참가자가 변경되었습니다. 토너먼트 설정에서 다시 전원 확인을 받아주세요.';
  return leagueValidation(l.active).valid?null:'정산 금액 설정을 다시 확인해주세요.';
 }
 function leagueSnapshot(r){if(r.league?.pendingSettlement)throw new Error('Pending settlement blocks new game');r.leagueGame=null;if(!r.league?.active)return;const l=r.league;
@@ -278,7 +301,7 @@ function leagueDecide(r,p,data){const l=r.league;if(!l||typeof data.gameId!=='st
  const pending=l.pendingSettlement;if(!pending||pending.gameId!==data.gameId||pending.status!=='pending')return {error:'현재 대기 중인 게임 정산이 아닙니다.'};
  if(data.decision==='applied'){
   const rows=pending.players;if(rows.reduce((a,x)=>a+x.delta,0)!==0)return {error:'정산 변동 합계가 올바르지 않습니다.'};
-  for(const x of rows){const row=l.ledger[x.pid];if(!row||!Number.isSafeInteger(row.points+x.delta)||!Number.isSafeInteger(row.games+1))return {error:'누적 정산값을 확인할 수 없습니다.'}}
+  for(const x of rows){const row=l.ledger[x.pid];if(!row||!Number.isSafeInteger(row.points+x.delta)||!Number.isSafeInteger(row.games+1))return {error:'상금누적값을 확인할 수 없습니다.'}}
   // Synchronous, once-only commit. No awaits between checking the ID and storing its decision.
   for(const x of rows){l.ledger[x.pid].points+=x.delta;l.ledger[x.pid].games++}
   l.history.push({...leagueCopy(pending),status:'applied',decidedBy:p.pid,decidedAt:Date.now()});l.ledgerVersion++;
@@ -290,17 +313,17 @@ function leagueDecide(r,p,data){const l=r.league;if(!l||typeof data.gameId!=='st
 function installLeagueHandlers(s){
  const handler=(event,host,fn)=>s.on(event,(data,callback)=>{const ack=typeof callback==='function'?callback:()=>{};const rp=roomPlayerForSocket(s);if(!rp)return ack({error:'방에 입장해주세요.'});if(host&&rp.p.pid!==rp.r.hostPid)return ack({error:'방장만 변경할 수 있습니다.'});try{const result=fn(rp.r,rp.p,data||{});leagueBroadcast(rp.r);ack(result||{ok:true})}catch(e){console.error('[LEAGUE]',e);ack({error:'정산 요청을 처리하지 못했습니다.'})}});
  handler('league:open',true,(r)=>{const l=leagueEnsure(r);if(l.phase==='idle'||l.phase==='invalid'){l.draft=leagueCopy(l.active||l.draft);l.phase='editing';l.approvals=[];l.version++;l.notice=null}return {ok:true}});
- handler('league:edit',true,(r,p,d)=>{const l=r.league;if(!l||d.version!==l.version)return {error:'설정이 변경되었습니다. 최신 설정에서 다시 입력해주세요.',code:'STALE_VERSION'};if(!['editing','consent','invalid'].includes(l.phase))return {error:'정산 설정을 먼저 열어주세요.'};
+ handler('league:edit',true,(r,p,d)=>{const l=r.league;if(!l||d.version!==l.version)return {error:'설정이 변경되었습니다. 최신 설정에서 다시 입력해주세요.',code:'STALE_VERSION'};if(!['editing','consent','invalid'].includes(l.phase))return {error:'토너먼트 설정을 먼저 열어주세요.'};
  const c={...l.draft};if(Object.hasOwn(d,'count')){if(!Number.isInteger(d.count)||d.count<2||d.count>9)return {error:'참가 인원을 확인해주세요.'};Object.assign(c,leagueCopy(l.presets[d.count]||{...c,count:d.count}));c.count=d.count}
  if(Object.hasOwn(d,'bet'))c.bet=d.bet;if(Object.hasOwn(d,'awards')){if(!Array.isArray(d.awards)||d.awards.length!==9)return {error:'순위 입력을 확인해주세요.'};c.awards=d.awards.slice()}
  // Null represents a temporarily empty numeric input; it is shared but cannot be confirmed.
  if((c.bet!==null&&(!Number.isSafeInteger(c.bet)||c.bet<1||c.bet>LEAGUE_POINT_MAX))||c.awards.some(v=>v!==null&&(!Number.isSafeInteger(v)||v<0||v>9*LEAGUE_POINT_MAX)))return {error:'정산 금액은 허용 범위의 정수로 입력해주세요.'};
  l.draft=c;l.version++;l.approvals=[];l.proposalIds=[];l.phase='editing';l.notice=null;return {ok:true,version:l.version};});
- handler('league:confirm',true,(r,p,d)=>{const l=r.league;if(!l||d.version!==l.version)return {error:'최신 설정을 다시 확인해주세요.'};const v=leagueValidation(l.draft);if(!v.valid)return {error:v.error};if(l.draft.count!==leagueMembers(r).length)return {error:`정산 설정 ${l.draft.count}인 / 현재 참가 ${leagueMembers(r).length}인. 인원을 맞춰주세요.`};l.phase='consent';l.approvals=[];l.proposalIds=leagueIds(r);l.version++;l.notice=null;return {ok:true}});
+ handler('league:confirm',true,(r,p,d)=>{const l=r.league;if(!l||d.version!==l.version)return {error:'최신 설정을 다시 확인해주세요.'};const v=leagueValidation(l.draft);if(!v.valid)return {error:v.error};if(l.draft.count!==leagueMembers(r).length)return {error:`토너먼트 설정 ${l.draft.count}인 / 현재 참가 ${leagueMembers(r).length}인. 인원을 맞춰주세요.`};l.phase='consent';l.approvals=[];l.proposalIds=leagueIds(r);l.version++;l.notice=null;return {ok:true}});
  handler('league:agree',false,(r,p,d)=>{const l=r.league;leagueSyncMembers(r);if(!l||l.phase!=='consent'||d.version!==l.version||!l.proposalIds.includes(p.pid))return {error:'참가자 또는 설정이 변경되었습니다. 다시 확인해주세요.'};if(!l.approvals.includes(p.pid))l.approvals.push(p.pid);
  if(l.approvals.length===l.proposalIds.length){l.active={...leagueCopy(l.draft),version:l.version};l.presets[l.active.count]=leagueCopy(l.draft);l.approvedIds=l.proposalIds.slice();l.phase='idle';l.activation++;l.notice=null}return {ok:true}});
  handler('settlement:decide',true,leagueDecide);
- handler('league:reset',true,(r,p,d)=>{const l=r.league;if(!l)return {ok:true};if(l.pendingSettlement)return {error:'이전 게임의 정산 반영 여부를 먼저 선택해주세요.'};if(d.ledgerVersion!==l.ledgerVersion)return {error:'정산 금액이 변경되었습니다. 누적 정산을 다시 확인해주세요.'};for(const row of Object.values(l.ledger)){row.points=0;row.games=0}l.history=[];l.ledgerVersion++;l.error=null;return {ok:true}});
+ handler('league:reset',true,(r,p,d)=>{const l=r.league;if(!l)return {ok:true};if(l.pendingSettlement)return {error:'이전 게임의 정산 반영 여부를 먼저 선택해주세요.'};if(d.ledgerVersion!==l.ledgerVersion)return {error:'정산 금액이 변경되었습니다. 상금누적을 다시 확인해주세요.'};for(const row of Object.values(l.ledger)){row.points=0;row.games=0}l.history=[];l.ledgerVersion++;l.error=null;return {ok:true}});
  handler('league:get',false,()=>({ok:true}));
 }
 
@@ -416,27 +439,7 @@ io.on('connection',s=>{
  if(!target||target.pid===rp.p.pid)return ack({error:'강제퇴장 대상을 확인해주세요.'});
  removeMember(rp.r,target,'방장에 의해 현재 방에서 퇴장되었습니다.');ack({ok:true});
  });
- s.on('action',({type,amount},ack=()=>{})=>{
- const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
- if(!r||!p||r.turn<0||r.players[r.turn]!==p||!canAct(r,p))return ack({error:'내 차례가 아닙니다.'});
- const call=Math.max(0,r.highest-p.bet),available=availableBet(r,p),max=p.bet+available,min=r.highest+r.minRaise;
- if(type==='allin'&&available<p.stack)return ack({error:'MAX 베팅 상한입니다. MAX 버튼을 사용하세요.'});
- const chosenMax=type==='max';
- if(chosenMax)type=available===p.stack?'allin':'max';
- if(type==='fold'){p.fold=true;p.acted=true;markAction(r,p,'fold');note(r,p.name+' 폴드')}
- else if(type==='check'&&call===0){p.acted=true;markAction(r,p,'check');note(r,p.name+' 체크')}
- else if(type==='call'&&call>0){bet(r,r.turn,call);p.acted=true;markAction(r,p,p.allin?'allin':p.capped?'max':'call');note(r,p.name+(p.allin?' 올인 콜':p.capped?' MAX 콜':' 콜'))}
- else if((type==='allin'||type==='max')&&max<=r.highest){bet(r,r.turn,available);p.acted=true;markAction(r,p,type);note(r,`${p.name} ${type==='max'?'MAX':'올인'} ${max.toLocaleString()}`)}
- else if(type==='raise'||type==='allin'||type==='max'){
-  const total=type==='raise'?Number(amount):max;
-  if(!Number.isSafeInteger(total)||total%UNIT!==0||total<=r.highest||total>max||(total<min&&total!==max))return ack({error:`레이즈는 ${Math.min(min,max).toLocaleString()}~${max.toLocaleString()}까지, 1,000 단위입니다.`});
-  const previous=r.highest;bet(r,r.turn,total-p.bet);r.highest=p.bet;const size=r.highest-previous;
-  if(size>=r.minRaise){r.minRaise=size;r.players.forEach(q=>{if(q!==p&&canAct(r,q))q.acted=false})}
-  p.acted=true;const actual=p.allin?'allin':p.capped?'max':'raise';markAction(r,p,actual);
-  note(r,`${p.name} ${actual==='allin'?'올인':actual==='max'?'MAX':'레이즈'} ${total.toLocaleString()}`);
- }else return ack({error:'잘못된 액션'});
- ack({ok:true});advance(r);
- });
+ s.on('action',(data,ack)=>applyPokerAction(s,data,ack));
  s.on('disconnect',(reason,details)=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;connlog('disconnect',s.id,'reason='+reason,'room='+(r?.code||'-'),'pid='+(p?.pid||'-'),details?.message||'');if(!r||!p)return;/* stale disconnect must never erase a newer resumed socket */if(p.socketId===s.id){p.socketId=null;p.disconnectedAt=Date.now()}if(!r.players.some(x=>x.socketId))r.emptySince=Date.now();emitLobby();note(r,`${p.name} 연결 끊김 · 자동 재접속 대기`);send(r)});
 });
 setInterval(()=>{for(const r of rooms.values()){try{for(const p of [...r.players])if(!p.departed&&!p.leaveAfterHand&&!p.socketId&&p.disconnectedAt&&Date.now()-p.disconnectedAt>=90000)expirePlayer(r,p,'90초 재접속 유예 종료');expireIdlePlayers(r);if(!rooms.has(r.code))continue;if(r.startedAt){tickAutoRebuy(r);if(r.turn>=0&&r.turnDeadline&&Date.now()>=r.turnDeadline){let p=r.players[r.turn];if(p&&p.inHand&&!p.fold&&!p.allin){p.fold=true;p.acted=true;markAction(r,p,'timeout');note(r,`⏱️ ${p.name} 시간초과 · 자동 폴드`);advance(r);continue}}if(!r.runout)send(r);finishGameIfNeeded(r)}}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] roomTick',r.code,e?.stack||e)}}},1000);
