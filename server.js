@@ -222,7 +222,7 @@ function queuePreAction(r){
  setTimeout(()=>{p.preActionQueued=false;if(p.preAction!==q||r.handId!==q.handId||r.players[r.turn]!==p||!canAct(r,p))return;
  const sock=io.sockets.sockets.get(p.socketId);if(!sock)return;p.preAction=null;
  applyPokerAction(sock,{type:q.type},result=>{if(result?.error)send(r)});
- },0);
+ },900);
 }
 function removeMember(r,p,reason){
  const live=io.sockets.sockets.get(p.socketId),transport=live||{id:null,data:{},leave:()=>{}};
