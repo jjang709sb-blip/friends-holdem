@@ -17,7 +17,7 @@ function observation(r,p,{available,category,unit}){
    allin:!!x.allin,capped:!!x.capped,raises:m.raises,preflopRaises:m.preflopRaises,preflopCalled:m.preflopCalled,
    lastAction:action?{type:action.type,amount:action.amount}:null};
  });
- const v={hole:p.cards.slice(),board:r.board.slice(),category,unit,street:r.street,
+ const v={botProfile:p.botProfile||'baksa',hole:p.cards.slice(),board:r.board.slice(),category,unit,street:r.street,
   stack:p.stack,bet:p.bet,available,toCall:Math.max(0,r.highest-p.bet),highest:r.highest,minRaise:r.minRaise,
   bigBlind:r.handBB||unit*2,pot:players.reduce((a,x)=>a+(x.contrib||0),0),position:r.players.indexOf(p),button:r.button,players};
  const freeze=o=>{if(o&&typeof o==='object'){Object.values(o).forEach(freeze);Object.freeze(o)}return o};return freeze(v);

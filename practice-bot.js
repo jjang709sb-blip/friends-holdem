@@ -7,12 +7,19 @@ const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
 const encode=c=>SUITS.indexOf(c[1])*13+RANKS.indexOf(c[0]);
 const rank=c=>c%13+2;
 const suit=c=>Math.floor(c/13);
+// Identity stays attached to the player when seats rotate.
 const PROFILES=Object.freeze([
- {aggression:.52,tightness:0,bluff:.055}, {aggression:.42,tightness:.025,bluff:.025},
- {aggression:.63,tightness:-.015,bluff:.08}, {aggression:.49,tightness:.01,bluff:.04},
- {aggression:.58,tightness:0,bluff:.065}, {aggression:.45,tightness:.02,bluff:.035},
- {aggression:.60,tightness:-.01,bluff:.07}, {aggression:.51,tightness:.005,bluff:.05}
-]);
+ {id:'taesan',name:'태산',label:'🛡️ 정석형',description:'참여할 패는 신중하게 고르고, 좋은 패는 적극적으로 베팅합니다.',aggression:.65,tightness:.02,bluff:.025,entry:.61,callBias:0,sizing:1,trap:0,steal:.10},
+ {id:'maengho',name:'맹호',label:'🔥 공격형',description:'넓은 범위로 먼저 레이즈하며, 뒷자리에서 압박을 자주 시도합니다.',aggression:.88,tightness:-.015,bluff:.15,entry:.51,callBias:.025,sizing:1.15,trap:0,steal:.18},
+ {id:'yeou',name:'여우',label:'🦊 블러프형',description:'유리한 자리에서 블러프를 섞고, 강한 패를 체크로 숨기기도 합니다.',aggression:.66,tightness:0,bluff:.25,entry:.53,callBias:.015,sizing:.95,trap:.22,steal:.16},
+ {id:'baksa',name:'박사',label:'🧠 계산형',description:'콜 비용과 추정 승률을 중시합니다. 비싼 추격은 줄이고 유리한 가격을 고릅니다.',aggression:.53,tightness:0,bluff:.045,entry:.58,callBias:0,sizing:.9,trap:0,steal:.11},
+ {id:'bulgom',name:'불곰',label:'📞 콜 잘함',description:'작은 베팅에는 넓게 따라옵니다. 먼저 레이즈하거나 블러프하는 빈도는 낮습니다.',aggression:.22,tightness:-.02,bluff:.01,entry:.42,callBias:.09,sizing:.8,trap:0,steal:.07},
+ {id:'beongae',name:'번개',label:'⚡ 막치는형',description:'넓은 패로 참여하고 큰 베팅을 즐깁니다. 무리한 승부도 있어 변동이 큽니다.',aggression:.82,tightness:-.04,bluff:.22,entry:.40,callBias:.08,sizing:1.4,trap:0,steal:.16},
+ {id:'bawi',name:'바위',label:'🪨 신중형',description:'참여 범위가 좁고 큰 압박에는 잘 접습니다. 크게 베팅하면 강한 패를 경계하세요.',aggression:.32,tightness:.055,bluff:.005,entry:.67,callBias:0,sizing:.85,trap:0,steal:.06},
+ {id:'neung',name:'능구렁',label:'🎯 기회형',description:'앞자리에서는 신중하고, 뒤에서 약한 반응이 보이면 넓게 공격합니다.',aggression:.70,tightness:.005,bluff:.16,entry:.65,callBias:.02,sizing:1,trap:.08,steal:.26}
+].map(Object.freeze));
+function getProfile(id){return PROFILES.find(p=>p.id===id)||PROFILES[3]}
+function publicProfile(id){const p=getProfile(id);return {id:p.id,label:p.label,description:p.description}}
 function straight(mask){
  for(let top=14;top>=6;top--)if((mask & (31<<(top-4)))===(31<<(top-4)))return top;
  return (mask & ((1<<14)|(1<<5)|(1<<4)|(1<<3)|(1<<2)))===((1<<14)|(1<<5)|(1<<4)|(1<<3)|(1<<2))?5:0;
@@ -114,7 +121,7 @@ function estimate(v,random=Math.random,options={}){
 }
 function choose(v,random=Math.random,custom={}){
  const rng=()=>clamp(Number(random())||0,0,.999999999);
- const profile={...PROFILES[Math.abs(v.position||0)%PROFILES.length],...custom};
+ const profile={...getProfile(v.botProfile),...custom};
  const free=v.toCall===0,pass={type:free?'check':'call'},fold={type:free?'check':'fold'};
  if(v.hole.length!==2)return fold;
  const opponents=v.players.filter(p=>p.inHand&&!p.fold&&p.seat!==v.position);
@@ -122,15 +129,26 @@ function choose(v,random=Math.random,custom={}){
  const pos=position(v),pf=preflop(v.hole.map(encode)),bb=v.bigBlind||Math.max(v.unit,v.minRaise);
  const unopened=!v.board.length&&v.highest<=bb;
  // Position-sensitive opening discipline; avoid cheap multiway trash calls.
- if(unopened&&!free){const entry=.55-pos*.13+profile.tightness;
-  if(pf<entry&&v.toCall/Math.max(1,v.stack)>.015)return fold;
+ if(unopened){
+  const entry=profile.entry-pos*profile.steal;
+  if(pf<entry)return fold;
+  // Unacted players are not eight guaranteed showdown callers.
+  const max=v.bet+v.available,min=v.highest+v.minRaise;
+  if(max>v.highest&&rng()<profile.aggression){
+   const target=Math.min(max,Math.max(min,Math.round(bb*(2.3*profile.sizing+.6*opponents.filter(p=>p.lastAction?.type==='call').length)/v.unit)*v.unit));
+   return {type:target===max?(v.available===v.stack?'allin':'max'):'raise',amount:target};
+  }
+  return pass;
  }
  const e=estimate(v,rng),allCommitted=opponents.every(p=>p.allin||p.capped||p.stack===0);
  const price=e.call/Math.max(1,e.eligiblePot);
  const realization=v.board.length===5||e.call>=v.stack||allCommitted?1:clamp(.83+pos*.11-(opponents.length-1)*.015,.72,.96);
- const adjusted=e.potEquity*realization;
+ const pressure=e.call/Math.max(1,v.stack);
+ const adjusted=e.potEquity*realization+profile.callBias*Math.max(0,1-pressure*1.8);
  const margin=(v.board.length===5?.012:.025)+profile.tightness;
- if(!free&&adjusted<price+margin)return fold;
+ const marginal=adjusted>=price+margin-.055;
+ const bluffAttempt=opponents.length<=2&&pos>.45&&marginal&&pressure<.18&&rng()<profile.bluff;
+ if(!free&&adjusted<price+margin&&!bluffAttempt)return fold;
  const max=v.bet+v.available,min=v.highest+v.minRaise;
  // No meaningless raise into a pot where nobody can contribute more.
  const callable=opponents.filter(p=>!p.allin&&!p.capped&&p.stack>Math.max(0,v.highest-p.bet));
@@ -138,14 +156,15 @@ function choose(v,random=Math.random,custom={}){
  const edge=e.equity-1/(opponents.length+1);
  const value=v.board.length?e.equity>(opponents.length===1?.64:.48)&&edge>.20:pf>.77||(unopened&&pf>.57&&pos>.65);
  const semi=v.board.length>0&&v.board.length<5&&e.equity>.30&&e.equity<.58;
- const bluff=opponents.length<=2&&pos>.45&&!allCommitted&&rng()<profile.bluff*(semi?1.6:.5)&&v.toCall<Math.max(bb,v.pot*.35);
+ const bluff=bluffAttempt||opponents.length<=2&&pos>.45&&!allCommitted&&rng()<profile.bluff*(semi?1.6:.5)&&v.toCall<Math.max(bb,v.pot*.35);
  if(!(value||bluff)||rng()>profile.aggression+(value?.25:0))return pass;
+ if(free&&value&&e.equity>.8&&v.board.length<5&&rng()<profile.trap)return pass;
  let target;
  if(!v.board.length){
   target=unopened?Math.round((2.3+opponents.filter(p=>p.lastAction?.type==='call').length*.7)*bb):Math.max(min,v.highest*(pos>.65?3:3.6));
  }else{
   const fraction=bluff?.55:e.equity>.82?.85:e.equity>.66?.65:.42;
-  target=v.highest+(v.pot+e.call)*fraction;
+  target=v.highest+(v.pot+e.call)*fraction*profile.sizing;
  }
  // Avoid putting chips beyond every opponent's effective stack; MAX stays distinct.
  const effective=Math.max(...callable.map(p=>p.bet+p.stack));
@@ -157,4 +176,4 @@ function choose(v,random=Math.random,custom={}){
  if(max-target<=Math.max(bb,v.stack*.12)&&e.equity>.74&&max<=effective)target=max;
  return {type:target===max?(v.available===v.stack?'allin':'max'):'raise',amount:target};
 }
-module.exports={choose,strength,estimate,evaluate,encode,PROFILES,version:'2.0.0'};
+module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'2.1.0'};
