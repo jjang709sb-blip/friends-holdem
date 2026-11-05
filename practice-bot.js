@@ -1,5 +1,5 @@
 'use strict';
-// Advanced bounded-sampling policy v2. No room, network, actual deck, or other
+// Advanced bounded-sampling policy v3. No room, network, actual deck, or other
 // private cards enter this module. This is a heuristic agent, NOT a GTO solver.
 const {performance}=require('node:perf_hooks');
 const RANKS='23456789TJQKA',SUITS='SHDC';
@@ -61,6 +61,11 @@ function position(v){
  const ordered=seats.sort((a,b)=>((a-v.button-1+n)%n)-((b-v.button-1+n)%n));
  const at=ordered.indexOf(v.position);return ordered.length>1?at/(ordered.length-1):.5;
 }
+// Public tendency is evidence of pressure, never proof that a bet is a bluff.
+function pressureRead(op){
+ const t=op.riverPressure;
+ return t&&t.opportunities>=4?clamp((t.rate-.55)*t.confidence,0,.30):0;
+}
 function rangeWeight(pair,op,board){
  const pf=preflop(pair),aggressive=['raise','allin','max'].includes(op.lastAction?.type);
  const raises=op.raises||0;
@@ -75,7 +80,8 @@ function rangeWeight(pair,op,board){
   const sc=[0,0,0,0];for(const c of all)sc[suit(c)]++;
   const draw=board.length<5&&sc.includes(4);
   // Retain bluff combinations; never infer a single certain opponent hand.
-  weight*=cat>=2?1:cat===1?.45:draw?.35:.07;
+  const read=board.length===5&&op.lastAction?.checkedToBet?pressureRead(op):0;
+  weight*=cat>=2?1:cat===1?.45+read*.3:draw?.35:.07+read*.65;
  }
  return Math.max(.005,weight);
 }
@@ -157,7 +163,20 @@ function choose(v,random=Math.random,custom={}){
  const value=v.board.length?e.equity>(opponents.length===1?.64:.48)&&edge>.20:pf>.77||(unopened&&pf>.57&&pos>.65);
  const semi=v.board.length>0&&v.board.length<5&&e.equity>.30&&e.equity<.58;
  const bluff=bluffAttempt||opponents.length<=2&&pos>.45&&!allCommitted&&rng()<profile.bluff*(semi?1.6:.5)&&v.toCall<Math.max(bb,v.pot*.35);
- if(!(value||bluff)||rng()>profile.aggression+(value?.25:0))return pass;
+ const hero=v.players.find(p=>p.seat===v.position);
+ // A river trap needs actual private-card value and someone still to act behind.
+ // Keep all strong checks available for a later value call/raise, not a forced loss.
+ if(free&&value&&e.equity>.78&&v.board.length===5){
+  const n=v.players.length,order=seat=>(seat-v.button-1+n)%n;
+  const behind=callable.filter(p=>!p.acted&&order(p.seat)>order(v.position));
+  const contributes=evaluate([...v.hole,...v.board].map(encode))>evaluate(v.board.map(encode));
+  const base={taesan:.16,maengho:.18,yeou:.30,baksa:.20,bulgom:.12,beongae:.14,bawi:.10,neung:.28}[profile.id]??.18;
+  const read=behind.length?Math.max(...behind.map(pressureRead)):0;
+  const chance=clamp((base+read*.45)/(1+(opponents.length-1)*.25),0,.42);
+  if(behind.length&&contributes&&rng()<chance)return pass;
+ }
+ const checkRaise=!free&&v.board.length===5&&hero?.lastAction?.type==='check'&&value&&e.equity>.78;
+ if(!(value||bluff)||rng()>profile.aggression+(value?.25:0)+(checkRaise?.15:0))return pass;
  if(free&&value&&e.equity>.8&&v.board.length<5&&rng()<profile.trap)return pass;
  let target;
  if(!v.board.length){
@@ -176,4 +195,4 @@ function choose(v,random=Math.random,custom={}){
  if(max-target<=Math.max(bb,v.stack*.12)&&e.equity>.74&&max<=effective)target=max;
  return {type:target===max?(v.available===v.stack?'allin':'max'):'raise',amount:target};
 }
-module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'2.1.0'};
+module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'3.0.0'};

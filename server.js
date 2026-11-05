@@ -15,7 +15,7 @@ const io=new Server(server,{
 });
 const rooms=new Map();
 const practicePolicy=require('./practice-bot');
-const {observation:practiceObservation}=require('./practice-room');
+const {observation:practiceObservation,recordAction:recordPracticeAction}=require('./practice-room');
 
 // Practice uses a frozen logical clock. Network/idle cleanup still uses wall time.
 function roomNow(r){return r?.practice?(r.pauseAt||Date.now())-(r.clockOffset||0):Date.now()}
@@ -67,7 +67,7 @@ function note(r,s){r.log.push(s);if(r.log.length>100)r.log.shift()}
 function bet(r,i,amount){let p=r.players[i],n=Math.max(0,Math.min(amount,availableBet(r,p)));p.stack-=n;p.bet+=n;p.contrib+=n;p.allin=p.stack===0;p.capped=!!handCap(r)&&p.contrib>=handCap(r)&&!p.allin}
 function timeLeft(r){if(!r.startedAt)return roomDurationMs(r)??null;if(roomDurationMs(r)===null)return null;return r.endsAt?Math.max(0,r.endsAt-roomNow(r)):0}
 function setTurnDeadline(r){r.turnStartedAt=r.turn>=0?roomNow(r):null;r.turnDeadline=r.turn>=0?r.turnStartedAt+roomTurnMs(r):null}
-function markAction(r,p,type){r.actionSeq=(r.actionSeq||0)+1;p.lastMove={type,at:roomNow(r),amount:p.bet||0};r.lastAction={seq:r.actionSeq,pid:p.pid,name:p.name,type,at:roomNow(r)}}
+function markAction(r,p,type,kind=type){r.actionSeq=(r.actionSeq||0)+1;p.lastMove={type,at:roomNow(r),amount:p.bet||0};r.lastAction={seq:r.actionSeq,pid:p.pid,name:p.name,type,at:roomNow(r)};if(r.practice)recordPracticeAction(r,p,type,kind)}
 function send(r){
  if(r.closed)return;queuePracticeBot(r);
  queuePreAction(r);leagueBroadcast(r);
@@ -163,11 +163,17 @@ function lobbyRooms(){return [...rooms.values()].filter(r=>!r.practice&&r.player
 function emitLobby(){io.emit('rooms:list',lobbyRooms())}
 // Practice rooms use the normal poker action validator; only their scheduler is new.
 function fillPracticeBots(r){
- if(!r.practice)return;
- while(r.players.length<9){const pid=crypto.randomBytes(8).toString('hex'),n=r.players.length;
-  r.players.push({pid,token:crypto.randomBytes(24).toString('hex'),socketId:'practice-bot:'+pid,bot:true,botProfile:practicePolicy.PROFILES[n-1].id,name:practicePolicy.PROFILES[n-1].name,
+ if(!r.practice||r.players.length>=9)return;
+ const firstFill=!r.players.some(p=>p.bot);
+ const used=new Set(r.players.filter(p=>p.bot).map(p=>p.botProfile));
+ const profiles=practicePolicy.PROFILES.filter(p=>!used.has(p.id));
+ for(let i=profiles.length-1;i>0;i--){const j=crypto.randomInt(i+1);[profiles[i],profiles[j]]=[profiles[j],profiles[i]]}
+ while(r.players.length<9&&profiles.length){const pid=crypto.randomBytes(8).toString('hex'),profile=profiles.pop();
+  r.players.push({pid,token:crypto.randomBytes(24).toString('hex'),socketId:'practice-bot:'+pid,bot:true,botProfile:profile.id,name:profile.name,
    stack:roomInitialBuyin(r),bank:roomTotalAssets(r)-roomInitialBuyin(r),spectator:false,inHand:false,fold:false,allin:false,bet:0,contrib:0,cards:[],acted:false,lastActivityAt:Date.now()});
  }
+ // deal() advances from this index; uniformly random here means a random first dealer.
+ if(firstFill)r.button=crypto.randomInt(r.players.length);
 }
 function closePractice(r,message='연습방을 종료했습니다.'){
  if(r.closed)return;r.closed=true;for(const t of [...(r.practiceTimers||[])])cancelRoomTimer(t);cancelRoomTimer(r.botTimer);cancelRoomTimer(r.nextHandTimer);cancelRoomTimer(r.practiceCloseTimer);
@@ -249,14 +255,14 @@ function applyPokerAction(s,{type,amount},ack=()=>{}){
  if(chosenMax)type=available===p.stack?'allin':'max';
  if(type==='fold'){p.fold=true;p.acted=true;markAction(r,p,'fold');note(r,p.name+' 폴드')}
  else if(type==='check'&&call===0){p.acted=true;markAction(r,p,'check');note(r,p.name+' 체크')}
- else if(type==='call'&&call>0){bet(r,r.turn,call);p.acted=true;markAction(r,p,p.allin?'allin':p.capped?'max':'call');note(r,p.name+(p.allin?' 올인 콜':p.capped?' MAX 콜':' 콜'))}
- else if((type==='allin'||type==='max')&&max<=r.highest){bet(r,r.turn,available);p.acted=true;markAction(r,p,type);note(r,`${p.name} ${type==='max'?'MAX':'올인'} ${max.toLocaleString()}`)}
+ else if(type==='call'&&call>0){bet(r,r.turn,call);p.acted=true;markAction(r,p,p.allin?'allin':p.capped?'max':'call','call');note(r,p.name+(p.allin?' 올인 콜':p.capped?' MAX 콜':' 콜'))}
+ else if((type==='allin'||type==='max')&&max<=r.highest){bet(r,r.turn,available);p.acted=true;markAction(r,p,type,'call');note(r,`${p.name} ${type==='max'?'MAX':'올인'} ${max.toLocaleString()}`)}
  else if(type==='raise'||type==='allin'||type==='max'){
   const total=type==='raise'?Number(amount):max;
   if(!Number.isSafeInteger(total)||total%UNIT!==0||total<=r.highest||total>max||(total<min&&total!==max))return ack({error:`레이즈는 ${Math.min(min,max).toLocaleString()}~${max.toLocaleString()}까지, 1,000 단위입니다.`});
   const previous=r.highest;bet(r,r.turn,total-p.bet);r.highest=p.bet;const size=r.highest-previous;
   if(size>=r.minRaise){r.minRaise=size;r.players.forEach(q=>{if(q!==p&&canAct(r,q))q.acted=false})}
-  p.acted=true;const actual=p.allin?'allin':p.capped?'max':'raise';markAction(r,p,actual);
+  p.acted=true;const actual=p.allin?'allin':p.capped?'max':'raise';markAction(r,p,actual,'raise');
   note(r,`${p.name} ${actual==='allin'?'올인':actual==='max'?'MAX':'레이즈'} ${total.toLocaleString()}`);
  }else return ack({error:'잘못된 액션'});
  ack({ok:true});advance(r);
