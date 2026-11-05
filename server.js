@@ -16,6 +16,19 @@ const io=new Server(server,{
 const rooms=new Map();
 const practicePolicy=require('./practice-bot');
 const {observation:practiceObservation}=require('./practice-room');
+
+// Practice uses a frozen logical clock. Network/idle cleanup still uses wall time.
+function roomNow(r){return r?.practice?(r.pauseAt||Date.now())-(r.clockOffset||0):Date.now()}
+function roomTurnMs(r){return (r.settings?.turnSeconds??17)*1000}
+function cancelRoomTimer(t){if(t?.practiceTimer){clearTimeout(t.handle);t.cancelled=true;t.room.practiceTimers.delete(t)}else clearTimeout(t)}
+function armRoomTimer(t){if(t.cancelled||t.room.closed||t.room.pauseAt)return;t.handle=setTimeout(()=>{if(t.cancelled||t.room.closed||t.room.pauseAt)return;t.room.practiceTimers.delete(t);t.cancelled=true;t.fn()},Math.max(0,t.at-roomNow(t.room)))}
+function roomTimeout(r,fn,delay){if(!r.practice)return setTimeout(fn,delay);const t={practiceTimer:true,room:r,fn,at:roomNow(r)+delay,handle:null,cancelled:false};(r.practiceTimers||(r.practiceTimers=new Set())).add(t);armRoomTimer(t);return t}
+function setPracticePaused(r,paused){
+ if(!r.practice||!!r.pauseAt===paused)return;
+ if(paused){r.pauseAt=Date.now();for(const t of r.practiceTimers||[])clearTimeout(t.handle)}
+ else{r.clockOffset=(r.clockOffset||0)+Date.now()-r.pauseAt;r.pauseAt=null;for(const t of r.practiceTimers||[])armRoomTimer(t)}
+}
+
 const PRACTICE_NAME='개발자연습용5664';
 const START_BANK=200000, INITIAL_BUYIN=50000, SB=1000, BB=2000, UNIT=1000, GAME_MS=30*60*1000, TURN_MS=17000, NEXT_HAND_MS=8000, BLIND_LEVEL_MS=5*60*1000;
 const GAME_DURATIONS={20:20*60*1000,30:30*60*1000,60:60*60*1000,0:null}, TOTAL_ASSETS=[100000,200000,250000,300000,500000], BLIND_LEVEL_MINUTES=[0,3,4,5,6];
@@ -23,7 +36,7 @@ function roomDurationMs(r){const m=r.settings?.minutes??30;return m===0?null:m*6
 function durationLabel(r){const m=r.settings?.minutes??30;return m===0?'제한없음':m+'분'}
 function roomTotalAssets(r){return r.settings?.totalAssets??START_BANK}
 function roomBlindLevelMs(r){const m=r.settings?.blindMinutes??5;return m===0?0:m*60*1000}
-function sessionBlinds(r){const ms=roomBlindLevelMs(r);if(!ms)return [SB,BB];const started=r.startedAt||Date.now();const level=Math.max(0,Math.min(5,Math.floor((Date.now()-started)/ms)));const mult=2**level;return [SB*mult,BB*mult]}
+function sessionBlinds(r){const ms=roomBlindLevelMs(r);if(!ms)return [SB,BB];const started=r.startedAt||roomNow(r);const level=Math.max(0,Math.min(40,Math.floor((roomNow(r)-started)/ms)));const mult=2**level;return [SB*mult,BB*mult]}
 function handBlinds(r){return [r.handSB||SB,r.handBB||BB]}
 function roomInitialBuyin(r){return Math.min(r.settings?.initialBuyin??INITIAL_BUYIN,roomTotalAssets(r))}
 const REBUY_AMOUNTS=[50000,100000];
@@ -53,14 +66,14 @@ const active=r=>r.players.filter(p=>p.inHand&&!p.fold), eligible=r=>active(r).fi
 function next(r,from,fn){for(let n=1;n<=r.players.length;n++){let i=(from+n)%r.players.length;if(fn(r.players[i]))return i}return -1}
 function note(r,s){r.log.push(s);if(r.log.length>100)r.log.shift()}
 function bet(r,i,amount){let p=r.players[i],n=Math.max(0,Math.min(amount,availableBet(r,p)));p.stack-=n;p.bet+=n;p.contrib+=n;p.allin=p.stack===0;p.capped=!!handCap(r)&&p.contrib>=handCap(r)&&!p.allin}
-function timeLeft(r){if(!r.startedAt)return roomDurationMs(r)??null;if(roomDurationMs(r)===null)return null;return r.endsAt?Math.max(0,r.endsAt-Date.now()):0}
-function setTurnDeadline(r){r.turnStartedAt=r.turn>=0?Date.now():null;r.turnDeadline=r.turn>=0?r.turnStartedAt+TURN_MS:null}
-function markAction(r,p,type){r.actionSeq=(r.actionSeq||0)+1;p.lastMove={type,at:Date.now(),amount:p.bet||0};r.lastAction={seq:r.actionSeq,pid:p.pid,name:p.name,type,at:Date.now()}}
+function timeLeft(r){if(!r.startedAt)return roomDurationMs(r)??null;if(roomDurationMs(r)===null)return null;return r.endsAt?Math.max(0,r.endsAt-roomNow(r)):0}
+function setTurnDeadline(r){r.turnStartedAt=r.turn>=0?roomNow(r):null;r.turnDeadline=r.turn>=0?r.turnStartedAt+roomTurnMs(r):null}
+function markAction(r,p,type){r.actionSeq=(r.actionSeq||0)+1;p.lastMove={type,at:roomNow(r),amount:p.bet||0};r.lastAction={seq:r.actionSeq,pid:p.pid,name:p.name,type,at:roomNow(r)}}
 function send(r){
  if(r.closed)return;queuePracticeBot(r);
  queuePreAction(r);leagueBroadcast(r);
  const visible=r.players.filter(x=>!x.departed), pubIndex=old=>{if(old==null||old<0)return -1;const target=r.players[old];return target?visible.indexOf(target):-1};
- for(const p of visible){if(!p.socketId||p.bot)continue;const reveal=new Set(r.showdownReveal||[]);const pub=visible.map((x,i)=>({pid:x.pid,name:x.name,...(r.practice&&x.bot?{botStyle:practicePolicy.publicProfile(x.botProfile)}:{}),stack:x.stack,bank:x.bank,fold:x.fold,inHand:x.inHand,allin:x.allin,capped:!!x.capped,bet:x.bet,contrib:x.contrib,seat:i,cards:(x.pid===p.pid||reveal.has(x.pid))?x.cards:null,cardsPublic:reveal.has(x.pid),manualReveal:x.manualRevealHandId===r.handId,waitingForNextHand:!!r.startedAt&&!x.inHand&&!x.departed,connected:!!x.socketId,total:x.stack+x.bank,spectator:!!x.spectator&&!!r.startedAt,finalRank:x.finalRank||null,eliminatedHandId:x.eliminatedHandId||null,lastMove:x.lastMove||null,rebuyAvailable:!!x.rebuyEligible&&x.stack===0,rebuyHandId:x.rebuyHandId||null,rebuyDeadline:x.rebuyDeadline||null}));const blindMs=roomBlindLevelMs(r);io.to(p.socketId).emit('state',{connectionId:p.socketId,code:r.code,roomName:r.roomName,runoutBoard:r.runoutBoard||null,presentationTimeline:r.presentationTimeline||null,preAction:p.preAction&&p.preAction.handId===r.handId?p.preAction.type:null,features:{league:1,timeline:1,chat:1,reactions:1,presentation:1,autoRebuy:1,maxBet:1,idleExit:1},handMaxBet:handCap(r),idleExpiresAt:(p.lastActivityAt||Date.now())+IDLE_MS,presentationExpiresAt:r.showdown?r.showdown.at+RESULT_PRESENTATION_MS:null,handId:r.handId||null,settlementComplete:!!r.settlementComplete,turnStartedAt:r.turnStartedAt||null,turnDurationMs:TURN_MS,players:pub,board:r.board,street:r.street,pot:r.showdown?.pot??r.players.reduce((s,x)=>s+x.contrib,0),button:pubIndex(r.button),sbIndex:pubIndex(r.sbIndex),bbIndex:pubIndex(r.bbIndex),turn:pubIndex(r.turn),highest:r.highest,minRaise:r.minRaise,log:r.log.slice(-18),you:p.pid,host:r.hostPid,canStart:['waiting','done'].includes(r.street)&&!r.startedAt,blinds:handBlinds(r),nextBlinds:sessionBlinds(r),timeLeft:timeLeft(r),serverNow:Date.now(),sessionEndsAt:r.endsAt,started:!!r.startedAt,settings:r.settings,durationLabel:durationLabel(r),gameOver:r.gameOver,turnDeadline:r.turnDeadline,lastAction:r.lastAction,nextHandAt:r.nextHandAt,showdown:r.showdown||null,resultEndsAt:r.resultEndsAt||null,sessionResultId:r.sessionResultId||null,finalRanking:r.finalRanking||null,sessionSeatOrder:(r.sessionSeatOrder||[]).filter(id=>visible.some(x=>x.pid===id)),blindLevelMs:blindMs,nextBlindAt:(r.startedAt&&blindMs)?r.startedAt+(Math.floor((Date.now()-r.startedAt)/blindMs)+1)*blindMs:null})}}
+ for(const p of visible){if(!p.socketId||p.bot)continue;const reveal=new Set(r.showdownReveal||[]);const pub=visible.map((x,i)=>({pid:x.pid,name:x.name,...(r.practice&&x.bot?{botStyle:practicePolicy.publicProfile(x.botProfile)}:{}),stack:x.stack,bank:x.bank,fold:x.fold,inHand:x.inHand,allin:x.allin,capped:!!x.capped,bet:x.bet,contrib:x.contrib,seat:i,cards:(x.pid===p.pid||reveal.has(x.pid))?x.cards:null,cardsPublic:reveal.has(x.pid),manualReveal:x.manualRevealHandId===r.handId,waitingForNextHand:!!r.startedAt&&!x.inHand&&!x.departed,connected:!!x.socketId,total:x.stack+x.bank,spectator:!!x.spectator&&!!r.startedAt,finalRank:x.finalRank||null,eliminatedHandId:x.eliminatedHandId||null,lastMove:x.lastMove||null,rebuyAvailable:!!x.rebuyEligible&&x.stack===0,rebuyHandId:x.rebuyHandId||null,rebuyDeadline:x.rebuyDeadline||null}));const blindMs=roomBlindLevelMs(r);io.to(p.socketId).emit('state',{connectionId:p.socketId,code:r.code,roomName:r.roomName,practice:!!r.practice,practicePaused:!!r.pauseAt,gameNow:roomNow(r),gameClockOffset:r.clockOffset||0,practiceReviewAvailable:!!(r.practice&&r.street==='done'&&r.settlementComplete&&roomNow(r)>=(r.presentationTimeline?.resultRevealAt||0)),runoutBoard:r.runoutBoard||null,presentationTimeline:r.presentationTimeline||null,preAction:p.preAction&&p.preAction.handId===r.handId?p.preAction.type:null,features:{league:1,timeline:1,chat:1,reactions:1,presentation:1,autoRebuy:1,maxBet:1,idleExit:1},handMaxBet:handCap(r),idleExpiresAt:(p.lastActivityAt||Date.now())+IDLE_MS,presentationExpiresAt:r.showdown?r.showdown.at+RESULT_PRESENTATION_MS:null,handId:r.handId||null,settlementComplete:!!r.settlementComplete,turnStartedAt:r.turnStartedAt||null,turnDurationMs:roomTurnMs(r),players:pub,board:r.board,street:r.street,pot:r.showdown?.pot??r.players.reduce((s,x)=>s+x.contrib,0),button:pubIndex(r.button),sbIndex:pubIndex(r.sbIndex),bbIndex:pubIndex(r.bbIndex),turn:pubIndex(r.turn),highest:r.highest,minRaise:r.minRaise,log:r.log.slice(-18),you:p.pid,host:r.hostPid,canStart:['waiting','done'].includes(r.street)&&!r.startedAt,blinds:handBlinds(r),nextBlinds:sessionBlinds(r),timeLeft:timeLeft(r),serverNow:Date.now(),sessionEndsAt:r.endsAt,started:!!r.startedAt,settings:r.settings,durationLabel:durationLabel(r),gameOver:r.gameOver,turnDeadline:r.turnDeadline,lastAction:r.lastAction,nextHandAt:r.nextHandAt,showdown:r.showdown||null,resultEndsAt:r.resultEndsAt||null,sessionResultId:r.sessionResultId||null,finalRanking:r.finalRanking||null,sessionSeatOrder:(r.sessionSeatOrder||[]).filter(id=>visible.some(x=>x.pid===id)),blindLevelMs:blindMs,nextBlindAt:(r.startedAt&&blindMs)?r.startedAt+(Math.floor((roomNow(r)-r.startedAt)/blindMs)+1)*blindMs:null})}}
 
 function eliminatePlayers(r,players,reason='bust'){
  if(!r.sessionRoster)return;
@@ -79,9 +92,9 @@ function sessionRanking(r){
  survivors.forEach((p,i)=>{p.rank=i+1});return rows.sort((a,b)=>a.rank-b.rank);
 }
 
-function endSession(r,reason=null){purgeLeavers(r);reason=reason||durationLabel(r)+' 세션 종료';clearTimeout(r.nextHandTimer);r.nextHandTimer=null;r.nextHandAt=null;r.finalRanking=sessionRanking(r);leagueSettle(r);r.sessionResultId=crypto.randomBytes(8).toString('hex');r.presentationTimeline=null;r.runoutBoard=null;r.players.forEach(p=>{p.preAction=null;p.inHand=false;p.fold=false;p.allin=false;p.capped=false;p.lastMove=null;p.bet=0;p.contrib=0;p.cards=[]});r.board=[];r.endsAt=null;r.startedAt=null;r.gameOver=false;r.street='waiting';r.turn=-1;r.turnDeadline=null;r.showdown=null;r.showdownReveal=[];r.resultEndsAt=null;for(let i=r.players.length-1;i>0;i--){const j=crypto.randomInt(i+1);[r.players[i],r.players[j]]=[r.players[j],r.players[i]]}r.sessionSeatOrder=r.players.map(p=>p.pid);r.button=-1;r.sbIndex=-1;r.bbIndex=-1;note(r,`🏆 ${reason} · 최종 순위 확정`);send(r);if(r.practice){r.practiceClosing=true;r.practiceCloseTimer=setTimeout(()=>closePractice(r,'연습이 종료되었습니다.'),20000)}}
-function finishGameIfNeeded(r){if(r.street==='done'&&r.resultEndsAt>Date.now())return false;if(r.restartRequested&&r.street==='done'){r.restartRequested=false;endSession(r,'방장 요청 · 새 게임 준비');return true}if(r.startedAt&&r.endsAt&&Date.now()>=r.endsAt&&['waiting','done'].includes(r.street)){endSession(r);return true}return false}
-function scheduleNext(r,delay=NEXT_HAND_MS){clearTimeout(r.nextHandTimer);r.nextHandTimer=null;if(r.gameOver||!r.startedAt)return;let alive=r.players.filter(p=>!p.spectator&&p.stack>0&&p.socketId);if(alive.length<2){let funded=r.players.filter(p=>!p.spectator&&(p.stack+p.bank)>0&&p.socketId);if(funded.length<2){r.nextHandAt=Date.now()+delay;r.nextHandTimer=setTimeout(()=>{try{r.nextHandTimer=null;r.nextHandAt=null;if(r.startedAt)endSession(r,'승부 종료 · 계속 플레이 가능한 선수가 1명 남음')}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] earlySessionEnd',r.code,e?.stack||e);r.nextHandTimer=null;r.nextHandAt=null;send(r)}},delay);send(r);return}r.nextHandAt=null;send(r);return}r.nextHandAt=Date.now()+delay;r.nextHandTimer=setTimeout(()=>{try{r.nextHandTimer=null;r.nextHandAt=null;if(!r.gameOver)deal(r)}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] nextHand',r.code,e?.stack||e);r.nextHandTimer=null;r.nextHandAt=null;send(r)}},delay);send(r)}
+function endSession(r,reason=null){purgeLeavers(r);reason=reason||durationLabel(r)+' 세션 종료';cancelRoomTimer(r.nextHandTimer);r.nextHandTimer=null;r.nextHandAt=null;r.finalRanking=sessionRanking(r);leagueSettle(r);r.sessionResultId=crypto.randomBytes(8).toString('hex');r.presentationTimeline=null;r.runoutBoard=null;r.players.forEach(p=>{p.preAction=null;p.inHand=false;p.fold=false;p.allin=false;p.capped=false;p.lastMove=null;p.bet=0;p.contrib=0;p.cards=[]});r.board=[];r.endsAt=null;r.startedAt=null;r.gameOver=false;r.street='waiting';r.turn=-1;r.turnDeadline=null;r.showdown=null;r.showdownReveal=[];r.resultEndsAt=null;for(let i=r.players.length-1;i>0;i--){const j=crypto.randomInt(i+1);[r.players[i],r.players[j]]=[r.players[j],r.players[i]]}r.sessionSeatOrder=r.players.map(p=>p.pid);r.button=-1;r.sbIndex=-1;r.bbIndex=-1;note(r,`🏆 ${reason} · 최종 순위 확정`);send(r);if(r.practice){r.practiceClosing=true;r.practiceCloseTimer=roomTimeout(r,()=>closePractice(r,'연습이 종료되었습니다.'),20000)}}
+function finishGameIfNeeded(r){if(r.street==='done'&&r.resultEndsAt>roomNow(r))return false;if(r.restartRequested&&r.street==='done'){r.restartRequested=false;endSession(r,'방장 요청 · 새 게임 준비');return true}if(r.startedAt&&r.endsAt&&roomNow(r)>=r.endsAt&&['waiting','done'].includes(r.street)){endSession(r);return true}return false}
+function scheduleNext(r,delay=NEXT_HAND_MS){cancelRoomTimer(r.nextHandTimer);r.nextHandTimer=null;if(r.gameOver||!r.startedAt)return;let alive=r.players.filter(p=>!p.spectator&&p.stack>0&&p.socketId);if(alive.length<2){let funded=r.players.filter(p=>!p.spectator&&(p.stack+p.bank)>0&&p.socketId);if(funded.length<2){r.nextHandAt=roomNow(r)+delay;r.nextHandTimer=roomTimeout(r,()=>{try{r.nextHandTimer=null;r.nextHandAt=null;if(r.startedAt)endSession(r,'승부 종료 · 계속 플레이 가능한 선수가 1명 남음')}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] earlySessionEnd',r.code,e?.stack||e);r.nextHandTimer=null;r.nextHandAt=null;send(r)}},delay);send(r);return}r.nextHandAt=null;send(r);return}r.nextHandAt=roomNow(r)+delay;r.nextHandTimer=roomTimeout(r,()=>{try{r.nextHandTimer=null;r.nextHandAt=null;if(!r.gameOver)deal(r)}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] nextHand',r.code,e?.stack||e);r.nextHandTimer=null;r.nextHandAt=null;send(r)}},delay);send(r)}
 function finish(r){
  let contenders=active(r),isShowdown=contenders.length>1,alreadyPublic=contenders.length>1&&contenders.every(p=>(r.showdownReveal||[]).includes(p.pid)),totalPot=r.players.reduce((s,x)=>s+x.contrib,0);
  if(isShowdown)while(r.board.length<5)r.board.push(r.deck.pop());
@@ -102,16 +115,16 @@ function finish(r){
  let displayWinnerPids=isShowdown?(potResults[0]?.winnerPids||[]):contenders.map(p=>p.pid);
  let displayWinners=contenders.filter(p=>displayWinnerPids.includes(p.pid));
  r.showdownReveal=isShowdown?contenders.map(p=>p.pid):[];
- if(!r.presentationTimeline){r.presentationTimeline=presentationPlan(r,5,false);if(!isShowdown||alreadyPublic){r.presentationTimeline.skipIntro=alreadyPublic;const t=r.presentationTimeline,delta=t.resultRevealAt-(Date.now()+700);for(const k of Object.keys(t))if(k.endsWith('At'))t[k]-=delta}}
+ if(!r.presentationTimeline){r.presentationTimeline=presentationPlan(r,5,false);if(!isShowdown||alreadyPublic){r.presentationTimeline.skipIntro=alreadyPublic;const t=r.presentationTimeline,delta=t.resultRevealAt-(roomNow(r)+700);for(const k of Object.keys(t))if(k.endsWith('At'))t[k]-=delta}}
  r.resultEndsAt=r.presentationTimeline.presentationCompleteAt;
- r.showdown={at:Date.now(),showdown:isShowdown,pot:totalPot-[...refunds.values()].reduce((a,b)=>a+b,0),committedPot:totalPot,refunds:[...refunds].map(([pid,amount])=>({pid,amount})),displayWinners:displayWinners.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',label:isShowdown?handLabel(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),potResults,winners:winnerPlayers.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',label:isShowdown?handLabel(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),players:isShowdown?contenders.map(p=>{const detail=bestDetail([...(Array.isArray(p.cards)?p.cards:[]),...(Array.isArray(r.board)?r.board:[])]);return{pid:p.pid,name:p.name,cards:p.cards,hand:handName(scores.get(p.pid)),label:handLabel(scores.get(p.pid)),winner:potResults.some(pot=>pot.winnerPids.includes(p.pid)),rank:detail.score,bestCards:r.board.length===5&&cmp(score5(r.board),detail.score)===0?r.board.slice():detail.cards}}):[]};
+ r.showdown={at:roomNow(r),showdown:isShowdown,pot:totalPot-[...refunds.values()].reduce((a,b)=>a+b,0),committedPot:totalPot,refunds:[...refunds].map(([pid,amount])=>({pid,amount})),displayWinners:displayWinners.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',label:isShowdown?handLabel(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),potResults,winners:winnerPlayers.map(p=>({pid:p.pid,name:p.name,cards:p.cards,hand:isShowdown?handName(scores.get(p.pid)):'폴드 승리',label:isShowdown?handLabel(scores.get(p.pid)):'폴드 승리',won:won.get(p.pid)||0})),players:isShowdown?contenders.map(p=>{const detail=bestDetail([...(Array.isArray(p.cards)?p.cards:[]),...(Array.isArray(r.board)?r.board:[])]);return{pid:p.pid,name:p.name,cards:p.cards,hand:handName(scores.get(p.pid)),label:handLabel(scores.get(p.pid)),winner:potResults.some(pot=>pot.winnerPids.includes(p.pid)),rank:detail.score,bestCards:r.board.length===5&&cmp(score5(r.board),detail.score)===0?r.board.slice():detail.cards}}):[]};
  if(winnerPlayers.length)note(r,`🏆 ${winnerPlayers.map(p=>p.name).join(', ')} 승리 · ${winnerPlayers.map(p=>handName(scores.get(p.pid))).join('/')}`);
  eliminatePlayers(r,r.players.filter(p=>!p.spectator&&p.stack+p.bank===0));
- r.settlementComplete=true;r.players.forEach(p=>{if(p.inHand&&p.stack===0&&p.bank>0){p.rebuyEligible=true;p.rebuyHandId=r.handId;p.rebuyDeadline=null}});r.street='done';r.turn=-1;r.turnDeadline=null;r.highest=0;purgeLeavers(r);send(r);scheduleNext(r,Math.max(1000,r.resultEndsAt-Date.now()+400))
+ r.settlementComplete=true;r.players.forEach(p=>{if(p.inHand&&p.stack===0&&p.bank>0){p.rebuyEligible=true;p.rebuyHandId=r.handId;p.rebuyDeadline=null}});r.street='done';r.turn=-1;r.turnDeadline=null;r.highest=0;purgeLeavers(r);send(r);scheduleNext(r,Math.max(1000,r.resultEndsAt-roomNow(r)+400))
 }
 // Server-owned presentation milestones. Acknowledgements never advance the clock.
 function presentationPlan(r,base,runout){
- const start=Date.now()+1400,cinematic=runout&&base===0;
+ const start=roomNow(r)+1400,cinematic=runout&&base===0;
  const t={id:r.handId,version:2,baseCount:base,cinematic,showdownStartAt:start,
  flopRevealAt:base>=3?start:start+2600,turnRevealAt:base>=4?start:start+3500,
  riverRevealAt:base>=5?start:start+4400};
@@ -130,9 +143,9 @@ function presentationPlan(r,base,runout){
  return t;
 }
 function atMilestone(r,at,label,fn){
- const hand=r.handId;setTimeout(()=>{if(r.closed||r.handId!==hand)return;try{
-  if(process.env.HOLDEM_DIAGNOSTICS==='1')console.log('[TIMELINE]',JSON.stringify({room:r.code,hand,label,planned:at,actual:Date.now(),delay:Date.now()-at}));fn();
- }catch(e){console.error('[TIMELINE]',label,e)}},Math.max(0,at-Date.now()));
+ const hand=r.handId;roomTimeout(r,()=>{if(r.closed||r.handId!==hand)return;try{
+  if(process.env.HOLDEM_DIAGNOSTICS==='1')console.log('[TIMELINE]',JSON.stringify({room:r.code,hand,label,planned:at,actual:roomNow(r),delay:roomNow(r)-at}));fn();
+ }catch(e){console.error('[TIMELINE]',label,e)}},Math.max(0,at-roomNow(r)));
 }
 function slowRunout(r){
  if(r.runout)return;const base=r.board.length;r.presentationTimeline=presentationPlan(r,base,true);
@@ -158,16 +171,16 @@ function fillPracticeBots(r){
  }
 }
 function closePractice(r,message='연습방을 종료했습니다.'){
- if(r.closed)return;r.closed=true;clearTimeout(r.botTimer);clearTimeout(r.nextHandTimer);clearTimeout(r.practiceCloseTimer);
+ if(r.closed)return;r.closed=true;for(const t of [...(r.practiceTimers||[])])cancelRoomTimer(t);cancelRoomTimer(r.botTimer);cancelRoomTimer(r.nextHandTimer);cancelRoomTimer(r.practiceCloseTimer);
  r.botTimer=null;r.nextHandTimer=null;r.runout=false;rooms.delete(r.code);
  for(const p of r.players){const sock=io.sockets.sockets.get(p.socketId);if(sock){sock.leave(r.code);sock.data.roomCode=null;sock.data.pid=null;sock.emit('room:removed',{message})}}
 }
 function queuePracticeBot(r){
- if(!r.practice||r.closed||r.practiceClosing)return;
+ if(!r.practice||r.closed||r.practiceClosing||r.pauseAt)return;
  const p=r.players[r.turn],owner=r.players.find(x=>x.pid===r.practiceOwner);
  const key=p?.bot&&owner?.socketId&&canAct(r,p)&&['preflop','flop','turn','river'].includes(r.street)?[r.handId,p.pid,r.turnDeadline].join(':'):null;
- if(r.botKey===key&&r.botTimer)return;clearTimeout(r.botTimer);r.botTimer=null;r.botKey=key;if(!key)return;
- r.botTimer=setTimeout(()=>{
+ if(r.botKey===key&&r.botTimer)return;cancelRoomTimer(r.botTimer);r.botTimer=null;r.botKey=key;if(!key)return;
+ r.botTimer=roomTimeout(r,()=>{
   r.botTimer=null;if(r.closed||!rooms.has(r.code)||r.botKey!==key||r.players[r.turn]!==p||!canAct(r,p))return;
   const view=practiceObservation(r,p,{available:availableBet(r,p),category:r.board.length?best([...p.cards,...r.board])[0]:0,unit:UNIT});
   let action;try{action=practicePolicy.choose(view)}catch(e){action={type:view.toCall?'call':'check'}}const actor={id:p.socketId,data:{roomCode:r.code,pid:p.pid}};touchActivity(p);
@@ -186,7 +199,7 @@ function bindSocket(r,p,s){
   if(!Number.isFinite(p.lastActivityAt))touchActivity(p);p.disconnectedAt=null;p.socketId=s.id;s.data.roomCode=r.code;s.data.pid=p.pid;s.join(r.code);r.emptySince=null;
 }
 function transferHost(r){const members=r.players.filter(x=>!x.departed&&!x.leaveAfterHand);const nextHost=members.find(x=>x.socketId)||members[0];r.hostPid=nextHost?.pid||null;if(nextHost)note(r,`👑 ${nextHost.name} 방장 승계`)}
-function detachToLobby(r,p,s){if(r.practice&&p.pid===r.practiceOwner){closePractice(r);return}if(r.startedAt)eliminatePlayers(r,[p],'left');if(p.socketId===s.id)p.socketId=null;s.leave(r.code);s.data.roomCode=null;s.data.pid=null;const wasHost=r.hostPid===p.pid;if(!p.inHand||['waiting','done'].includes(r.street)){const i=r.players.indexOf(p);if(i>=0)r.players.splice(i,1);if(r.button>=i)r.button--;if(r.sbIndex!=null&&r.sbIndex>=i)r.sbIndex--;if(r.bbIndex!=null&&r.bbIndex>=i)r.bbIndex--;if(r.turn>=i)r.turn--;r.sessionSeatOrder=(r.sessionSeatOrder||[]).filter(id=>id!==p.pid)}else{p.leaveAfterHand=true;p.departed=true}if(wasHost)transferHost(r);if(!r.players.some(x=>!x.departed&&!x.leaveAfterHand)){clearTimeout(r.nextHandTimer);r.nextHandTimer=null;if(r.league){if(r.startedAt){eliminatePlayers(r,r.players.filter(x=>!x.finalRank),'left');endSession(r,'참가자 퇴장 · 게임 종료')}}else{r.closed=true;rooms.delete(r.code)}}emitLobby()}
+function detachToLobby(r,p,s){if(r.practice&&p.pid===r.practiceOwner){closePractice(r);return}if(r.startedAt)eliminatePlayers(r,[p],'left');if(p.socketId===s.id)p.socketId=null;s.leave(r.code);s.data.roomCode=null;s.data.pid=null;const wasHost=r.hostPid===p.pid;if(!p.inHand||['waiting','done'].includes(r.street)){const i=r.players.indexOf(p);if(i>=0)r.players.splice(i,1);if(r.button>=i)r.button--;if(r.sbIndex!=null&&r.sbIndex>=i)r.sbIndex--;if(r.bbIndex!=null&&r.bbIndex>=i)r.bbIndex--;if(r.turn>=i)r.turn--;r.sessionSeatOrder=(r.sessionSeatOrder||[]).filter(id=>id!==p.pid)}else{p.leaveAfterHand=true;p.departed=true}if(wasHost)transferHost(r);if(!r.players.some(x=>!x.departed&&!x.leaveAfterHand)){cancelRoomTimer(r.nextHandTimer);r.nextHandTimer=null;if(r.league){if(r.startedAt){eliminatePlayers(r,r.players.filter(x=>!x.finalRank),'left');endSession(r,'참가자 퇴장 · 게임 종료')}}else{r.closed=true;rooms.delete(r.code)}}emitLobby()}
 function purgeLeavers(r){const gone=r.players.filter(p=>p.leaveAfterHand&&!p.socketId);if(!gone.length)return;const ids=new Set(gone.map(p=>p.pid));r.players=r.players.filter(p=>!ids.has(p.pid));r.sessionSeatOrder=(r.sessionSeatOrder||[]).filter(id=>!ids.has(id));r.button=-1;r.sbIndex=null;r.bbIndex=null;r.turn=-1}
 
 function expirePlayer(r,p,reason='30분 무활동'){
@@ -207,7 +220,7 @@ function connlog(...a){console.log(new Date().toISOString(),'[NET]',...a)}
 function validNickname(name){return typeof name==='string'&&name.trim().length>0}
 function addPlayer(r,name,s,ack,spectator=false){if(!validNickname(name))return ack({error:'닉네임을 입력해주세요.'});if(roomPlayerForSocket(s))return ack({error:'이미 이 방에 착석되어 있습니다.'});name=String(name||'Player').trim().slice(0,14)||'Player';let token=crypto.randomBytes(24).toString('hex'),pid=crypto.randomBytes(8).toString('hex');const total=roomTotalAssets(r);let p={pid,token,socketId:s.id,name,stack:spectator?0:roomInitialBuyin(r),bank:spectator?0:Math.max(0,total-roomInitialBuyin(r)),spectator:!!spectator,inHand:false,fold:false,allin:false,bet:0,contrib:0,cards:[],acted:false,lastActivityAt:Date.now()};if(s.data.leagueRestore){p.pid=s.data.leagueRestore.pid;p.token=s.data.leagueRestore.token;delete s.data.leagueRestore}r.players.push(p);if(!r.hostPid)r.hostPid=p.pid;bindSocket(r,p,s);note(r,spectator?`${name} 관전 입장`:`${name} 입장`);ack({code:r.code,token:p.token,pid:p.pid,spectator:!!spectator,lastActivityAt:p.lastActivityAt,serverNow:Date.now()});send(r)}
 function armAutoRebuy(r,p){
- if(r.startedAt&&!r.gameOver&&p.rebuyEligible&&p.stack===0&&p.bank>0&&!p.rebuyDeadline)p.rebuyDeadline=Date.now()+10000;
+ if(r.startedAt&&!r.gameOver&&p.rebuyEligible&&p.stack===0&&p.bank>0&&!p.rebuyDeadline)p.rebuyDeadline=roomNow(r)+10000;
 }
 function completeRebuy(r,p,amount){
  if(!p.rebuyEligible||p.spectator||p.stack!==0||amount<=0||p.bank<amount)return false;
@@ -221,14 +234,15 @@ function tickAutoRebuy(r){
   if(!p.rebuyEligible||p.stack!==0||p.spectator||!r.startedAt||r.gameOver)continue;
   // A missed presentation acknowledgement must not strand a reconnecting player.
   // The old hand has ended; alternatively allow the complete server result window.
-  if(p.rebuyHandId!==r.handId||(r.street==='done'&&r.resultEndsAt&&Date.now()>=r.resultEndsAt))armAutoRebuy(r,p);
-  if(p.rebuyDeadline&&Date.now()>=p.rebuyDeadline)completeRebuy(r,p,Math.min(50000,p.bank));
+  if(p.rebuyHandId!==r.handId||(r.street==='done'&&r.resultEndsAt&&roomNow(r)>=r.resultEndsAt))armAutoRebuy(r,p);
+  if(p.rebuyDeadline&&roomNow(r)>=p.rebuyDeadline)completeRebuy(r,p,Math.min(50000,p.bank));
  }
 }
 // Room-local league. Poker sessions, not individual hands, produce one entry.
 const LEAGUE_POINT_MAX=1000000;
 function applyPokerAction(s,{type,amount},ack=()=>{}){
  const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
+ if(r?.pauseAt)return ack({error:'연습이 일시정지되어 있습니다.'});
  if(!r||!p||r.turn<0||r.players[r.turn]!==p||!canAct(r,p))return ack({error:'내 차례가 아닙니다.'});
  const call=Math.max(0,r.highest-p.bet),available=availableBet(r,p),max=p.bet+available,min=r.highest+r.minRaise;
  if(type==='allin'&&available<p.stack)return ack({error:'MAX 베팅 상한입니다. MAX 버튼을 사용하세요.'});
@@ -249,10 +263,11 @@ function applyPokerAction(s,{type,amount},ack=()=>{}){
  ack({ok:true});advance(r);
  }
 function queuePreAction(r){
+ if(r.pauseAt)return;
  const p=r.players[r.turn],q=p?.preAction;if(!q)return;
  if(q.handId!==r.handId||!canAct(r,p)){p.preAction=null;return}
  if(!p.socketId||p.preActionQueued)return;p.preActionQueued=true;
- setTimeout(()=>{p.preActionQueued=false;if(p.preAction!==q||r.handId!==q.handId||r.players[r.turn]!==p||!canAct(r,p))return;
+ roomTimeout(r,()=>{p.preActionQueued=false;if(p.preAction!==q||r.handId!==q.handId||r.players[r.turn]!==p||!canAct(r,p))return;
  const sock=io.sockets.sockets.get(p.socketId);if(!sock)return;p.preAction=null;
  applyPokerAction(sock,{type:q.type},result=>{if(result?.error)send(r)});
  },900);
@@ -362,7 +377,7 @@ function installLeagueHandlers(s){
 
 io.on('connection',s=>{
  installLeagueHandlers(s);
- const meaningful=new Set(['settlement:decide','league:open','league:edit','league:confirm','league:agree','league:reset','activity','pre-action','room:kick','chat:send','action','reaction','settings','start','rebuy','restart-session']);
+ const meaningful=new Set(['practice:pause','practice:cards','settlement:decide','league:open','league:edit','league:confirm','league:agree','league:reset','activity','pre-action','room:kick','chat:send','action','reaction','settings','start','rebuy','restart-session']);
  s.use((packet,next)=>{
   if(meaningful.has(packet[0])){const rp=roomPlayerForSocket(s);if(rp){
    if(isIdle(rp.p)){expirePlayer(rp.r,rp.p);const cb=packet.at(-1);if(typeof cb==='function')cb({error:'30분 무활동으로 퇴장되었습니다.',code:'IDLE_EXIT'});return}
@@ -379,21 +394,35 @@ io.on('connection',s=>{
  connlog('connect',s.id,'transport='+s.conn.transport.name,'recovered='+!!s.recovered);
  s.conn.on('upgrade',t=>connlog('upgrade',s.id,'transport='+t.name));
  s.conn.on('error',e=>connlog('engine-error',s.id,e?.message||e));
+
+ s.on('practice:pause',(data={},ack=()=>{})=>{
+  const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
+  if(!r?.practice||p?.pid!==r.practiceOwner||p.socketId!==s.id)return ack({error:'연습방 주인만 사용할 수 있습니다.'});
+  if(!r.startedAt||r.practiceClosing||typeof data.paused!=='boolean')return ack({error:'진행 중인 연습에서만 사용할 수 있습니다.'});
+  setPracticePaused(r,data.paused);touchActivity(p);send(r);ack({ok:true,paused:!!r.pauseAt});
+ });
+ s.on('practice:cards',(data={},ack=()=>{})=>{
+  const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
+  if(!r?.practice||p?.pid!==r.practiceOwner||p.socketId!==s.id)return ack({error:'연습방에서만 사용할 수 있습니다.'});
+  if(data.handId!==r.handId||r.street!=='done'||!r.settlementComplete||roomNow(r)<(r.presentationTimeline?.resultRevealAt||0))return ack({error:'이번 핸드 결과가 공개된 뒤 확인할 수 있습니다.'});
+  // Owner-only review payload, never added to the bot observation or future state.
+  touchActivity(p);ack({ok:true,handId:r.handId,players:r.players.filter(x=>x.bot&&x.cards?.length===2).map(x=>({pid:x.pid,name:x.name,style:practicePolicy.publicProfile(x.botProfile).label,cards:x.cards,fold:x.fold}))});
+ });
  s.on('rooms:list',()=>s.emit('rooms:list',lobbyRooms()));
- s.on('create',({name},ack)=>{if(roomPlayerForSocket(s))return ack({error:'이미 방에 입장 중입니다.'});if(!validNickname(name))return ack({error:'닉네임을 입력해주세요.'});let code;do{code=crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(code));let cleanName=String(name||'Player').trim().slice(0,14)||'Player';let r={code,roomName:cleanName+'의 방',practice:name===PRACTICE_NAME,players:[],hostPid:null,button:-1,street:'waiting',board:[],turn:-1,highest:0,minRaise:BB,handSB:SB,handBB:BB,startedAt:null,log:[],endsAt:null,gameOver:false,turnDeadline:null,lastAction:null,actionSeq:0,nextHandTimer:null,nextHandAt:null,runout:false,showdown:null,showdownReveal:[],resultEndsAt:null,emptySince:null,finalRanking:null,sbIndex:null,bbIndex:null,settings:{minutes:30,totalAssets:200000,initialBuyin:50000,blindMinutes:5,maxBet:0},sessionSeatOrder:[],restartRequested:false};rooms.set(code,r);addPlayer(r,cleanName,s,res=>{if(res.error){rooms.delete(code);return ack(res)}r.hostPid=res.pid;if(r.practice){r.practiceOwner=res.pid;fillPracticeBots(r);send(r)}ack(res);if(!r.practice)emitLobby()})});
+ s.on('create',({name,practice=false},ack)=>{if(roomPlayerForSocket(s))return ack({error:'이미 방에 입장 중입니다.'});if(!validNickname(name))return ack({error:'닉네임을 입력해주세요.'});let code;do{code=crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(code));let cleanName=String(name||'Player').trim().slice(0,14)||'Player';let r={code,roomName:cleanName+'의 방',practice:practice===true||name===PRACTICE_NAME,players:[],hostPid:null,button:-1,street:'waiting',board:[],turn:-1,highest:0,minRaise:BB,handSB:SB,handBB:BB,startedAt:null,log:[],endsAt:null,gameOver:false,turnDeadline:null,lastAction:null,actionSeq:0,nextHandTimer:null,nextHandAt:null,runout:false,showdown:null,showdownReveal:[],resultEndsAt:null,emptySince:null,finalRanking:null,sbIndex:null,bbIndex:null,settings:{minutes:30,totalAssets:200000,initialBuyin:50000,blindMinutes:5,maxBet:0},sessionSeatOrder:[],restartRequested:false};if(r.practice){r.settings.totalAssets=500000;r.settings.initialBuyin=500000}r.settings.turnSeconds=17;rooms.set(code,r);addPlayer(r,cleanName,s,res=>{if(res.error){rooms.delete(code);return ack(res)}r.hostPid=res.pid;if(r.practice){r.practiceOwner=res.pid;fillPracticeBots(r);send(r)}ack(res);if(!r.practice)emitLobby()})});
  s.on('join',({code,name,token},ack)=>{if(!validNickname(name))return ack({error:'닉네임을 입력해주세요.'});delete s.data.leagueRestore;let existing=roomPlayerForSocket(s);if(existing)return ack({error:'이미 한 자리에 착석되어 있습니다.'});let r=rooms.get(String(code||'').toUpperCase());if(!r)return ack({error:'방을 찾을 수 없습니다.'});if(r.practice&&(!token||!r.players.some(p=>p.pid===r.practiceOwner&&p.token===token)))return ack({error:'비공개 연습방입니다.'});if(r.gameOver)return ack({error:'이미 종료된 방입니다.'});name=String(name||'Player').trim().slice(0,14)||'Player';if(r.players.some(p=>p.name===name&&p.socketId))return ack({error:'같은 닉네임이 이미 접속 중입니다.'});/* V5.59 fallback for in-app browsers that lose/recreate the webview: same nickname + disconnected seat means reconnect, never a new spectator. */let ghost=r.players.find(x=>((token&&x.token===token)||(x.name===name))&&!x.socketId&&!x.departed&&!x.leaveAfterHand);if(r.practice&&ghost?.pid!==r.practiceOwner)ghost=null;if(ghost&&isIdle(ghost)){expirePlayer(r,ghost);ghost=null;if(!rooms.has(r.code))return ack({error:'방이 종료되었습니다. 새 방을 만들어주세요.'})}if(ghost){if(token===ghost.token)ghost.name=name;bindSocket(r,ghost,s);note(r,`${ghost.name} 기존 좌석 복귀`);ack({code:r.code,token:ghost.token,pid:ghost.pid,resumed:true,spectator:!!ghost.spectator,lastActivityAt:ghost.lastActivityAt,serverNow:Date.now()});connlog('name-resume',r.code,ghost.pid,s.id);send(r);emitLobby();return}if(r.league){const old=Object.values(r.league.ledger).find(x=>token&&x.token===token)||Object.values(r.league.ledger).find(x=>x.name===name);if(old){if(!r.players.some(x=>x.pid===old.pid))s.data.leagueRestore=old}}if(leagueMembers(r).length>=9)return ack({error:'9명이 모두 찼습니다.'});if(r.startedAt)return addPlayer(r,name,s,res=>{ack(res);emitLobby()},true);addPlayer(r,name,s,res=>{ack(res);emitLobby()})});
  s.on('resume',({code,token},ack)=>{let r=rooms.get(String(code||'').toUpperCase());if(!r)return ack({error:'방이 없습니다.'});let p=r.players.find(x=>x.token===token&&!x.departed&&!x.leaveAfterHand);if(!p||p.bot||(r.practice&&p.pid!==r.practiceOwner))return ack({error:'재접속 정보가 없습니다.'});if(!validNickname(p.name))return ack({error:'닉네임을 입력한 뒤 방에 입장해주세요.',code:'NAME_REQUIRED'});if(isIdle(p)){expirePlayer(r,p);return ack({error:'30분 무활동으로 퇴장되었습니다.',code:'IDLE_EXIT'})}bindSocket(r,p,s);ack({code:r.code,token:p.token,pid:p.pid,resumed:true,lastActivityAt:p.lastActivityAt,serverNow:Date.now()});note(r,`${p.name} 재접속`);connlog('resume',r.code,p.pid,s.id);
   // V5.5: 전원이 백그라운드로 나간 사이 핸드가 끝나면 nextHandTimer가 없는 채로 대기할 수 있다.
   // 두 명 이상 복귀한 순간 세션이 살아 있으면 다음 핸드 스케줄을 다시 깨운다.
   const connectedReady=r.players.filter(x=>!x.spectator&&x.stack>0&&x.socketId).length;
-  if(r.startedAt&&(!r.endsAt||Date.now()<r.endsAt)&&['waiting','done'].includes(r.street)&&connectedReady>=2&&!r.nextHandTimer){scheduleNext(r,NEXT_HAND_MS);return}
+  if(r.pauseAt){send(r);return}if(r.startedAt&&(!r.endsAt||roomNow(r)<r.endsAt)&&['waiting','done'].includes(r.street)&&connectedReady>=2&&!r.nextHandTimer){scheduleNext(r,NEXT_HAND_MS);return}
   // 진행 중 핸드라면 기존 서버 턴/마감시간을 그대로 유지한다. 이미 시간이 지났으면 즉시 자동 폴드해 정지 상태를 해소한다.
-  if(r.startedAt&&r.turn>=0&&r.turnDeadline&&Date.now()>=r.turnDeadline){let tp=r.players[r.turn];if(tp&&tp.inHand&&!tp.fold&&!tp.allin){tp.fold=true;tp.acted=true;markAction(r,tp,'timeout');note(r,`⏱️ ${tp.name} 시간초과 · 자동 폴드`);advance(r);return}}
+  if(r.startedAt&&r.turn>=0&&r.turnDeadline&&roomNow(r)>=r.turnDeadline){let tp=r.players[r.turn];if(tp&&tp.inHand&&!tp.fold&&!tp.allin){tp.fold=true;tp.acted=true;markAction(r,tp,'timeout');note(r,`⏱️ ${tp.name} 시간초과 · 자동 폴드`);advance(r);return}}
   send(r)});
  s.on('leave-room',(ack=()=>{})=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||!p)return ack({error:'입장한 방이 없습니다.'});let wasTurn=r.turn>=0&&r.players[r.turn]?.pid===p.pid;if(r.startedAt&&['preflop','flop','turn','river'].includes(r.street)&&p.inHand&&!p.fold&&!p.allin&&!p.capped){p.fold=true;p.acted=true;markAction(r,p,'fold');note(r,`🚪 ${p.name} 방 나가기 · 자동 폴드`)}else note(r,`🚪 ${p.name} 대기실로 이동`);detachToLobby(r,p,s);ack({ok:true});if(rooms.has(r.code)){if(r.startedAt&&['preflop','flop','turn','river'].includes(r.street)&&(wasTurn||active(r).length<=1))advance(r);else send(r)}});
- s.on('restart-session',(ack=()=>{})=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||!p||p.pid!==r.hostPid)return ack({error:'방장만 새 게임을 준비할 수 있습니다.'});if(r.league?.pendingSettlement){const message='이전 게임의 정산 반영 여부를 먼저 선택해주세요.';s.emit('league:error',{message});return ack({error:message})}if(!r.startedAt){ack({ok:true,ready:true});send(r);return}if(['waiting','done'].includes(r.street)&&!(r.resultEndsAt>Date.now())){endSession(r,'방장 요청 · 새 게임 준비');ack({ok:true});return}r.restartRequested=true;note(r,'🔄 방장이 새 게임 준비를 요청했습니다 · 현재 핸드 종료 후 전환');ack({ok:true});send(r)});
- s.on('settings',({minutes,totalAssets,initialBuyin=50000,blindMinutes,maxBet=0},ack=()=>{})=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||p?.pid!==r.hostPid)return ack({error:'방장만 게임설정을 바꿀 수 있습니다.'});if(r.startedAt)return ack({error:'게임 시작 전에서만 설정할 수 있습니다.'});if([minutes,totalAssets,initialBuyin,blindMinutes,maxBet].some(v=>v===null||typeof v==='boolean'||v===''))return ack({error:'잘못된 게임설정입니다.'});if(typeof maxBet!=='number'&&(typeof maxBet!=='string'||!/^\d+$/.test(maxBet)))return ack({error:'잘못된 MAX 베팅입니다.'});minutes=Number(minutes);totalAssets=Number(totalAssets);blindMinutes=Number(blindMinutes);initialBuyin=Number(initialBuyin);maxBet=Number(maxBet);if(!Number.isInteger(minutes)||minutes<0||minutes>1440||!Number.isInteger(blindMinutes)||blindMinutes<0||blindMinutes>1440||![totalAssets,initialBuyin].every(n=>Number.isSafeInteger(n)&&n>=UNIT&&n<=100000000&&n%UNIT===0)||initialBuyin>totalAssets||!Number.isSafeInteger(maxBet)||maxBet<0||maxBet>100000000||maxBet%UNIT!==0)return ack({error:'잘못된 게임설정입니다.'});r.settings={minutes,totalAssets,initialBuyin,blindMinutes,maxBet};r.handMaxBet=maxBet;r.players.forEach(x=>{x.stack=roomInitialBuyin(r);x.bank=Math.max(0,totalAssets-x.stack)});note(r,`⚙️ 게임설정 · ${durationLabel(r)} · 총자산 ${totalAssets.toLocaleString()} · 블라인드업 ${blindMinutes===0?'없음':blindMinutes+'분'}`);ack({ok:true});send(r)});
- s.on('start',(arg,callback)=>{const ack=typeof arg==='function'?arg:typeof callback==='function'?callback:()=>{};let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||p?.pid!==r.hostPid||r.startedAt||!['waiting','done'].includes(r.street))return;if(r.practiceClosing)return ack({error:'연습방 종료 중입니다.'});if(r.practice)fillPracticeBots(r);const offline=leagueMembers(r).filter(x=>!x.socketId);if(offline.length){const message=offline.map(x=>x.name).join(', ')+'님 재연결 대기 중';s.emit('league:error',{message,readiness:true});return ack({error:message})}const leagueError=leagueStartError(r);if(leagueError){s.emit('league:error',{message:leagueError});ack({error:leagueError});leagueBroadcast(r);return}leagueSnapshot(r);let connected=r.players.filter(x=>x.socketId);if(connected.length<2){note(r,'게임 시작은 2명 이상 필요합니다.');send(r);return}const total=roomTotalAssets(r),dur=roomDurationMs(r);r.players.forEach(x=>{x.spectator=false;x.stack=roomInitialBuyin(r);x.bank=Math.max(0,total-x.stack);x.rebuyEligible=false;x.rebuyHandId=null;x.rebuyDeadline=null;x.inHand=false;x.fold=false;x.allin=false;x.bet=0;x.contrib=0;x.cards=[];x.acted=false});{/* V5.60: visual clockwise seats MUST use the same stable order as server betting order. Randomizing only sessionSeatOrder made the turn appear to jump around the table. */let order=r.players.filter(x=>x.socketId&&!x.spectator).map(x=>x.pid);r.sessionSeatOrder=order;}r.sessionRoster=r.players.filter(p=>p.socketId&&!p.spectator).map(p=>({pid:p.pid,name:p.name}));r.players.forEach(p=>{p.finalRank=null;p.eliminatedHandId=null});r.sessionResultId=null;r.restartRequested=false;r.startedAt=Date.now();r.endsAt=dur===null?null:r.startedAt+dur;r.finalRanking=null;r.showdown=null;r.showdownReveal=[];r.resultEndsAt=null;r.handSB=SB;r.handBB=BB;r.gameOver=false;r.nextHandAt=null;note(r,`▶️ ${durationLabel(r)} 새 세션 시작 · 전원 총자산 ${total.toLocaleString()} 초기화`);deal(r)});
+ s.on('restart-session',(ack=()=>{})=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||!p||p.pid!==r.hostPid)return ack({error:'방장만 새 게임을 준비할 수 있습니다.'});if(r.pauseAt)return ack({error:'계속하기 후 새 게임을 준비해주세요.'});if(r.league?.pendingSettlement){const message='이전 게임의 정산 반영 여부를 먼저 선택해주세요.';s.emit('league:error',{message});return ack({error:message})}if(!r.startedAt){ack({ok:true,ready:true});send(r);return}if(['waiting','done'].includes(r.street)&&!(r.resultEndsAt>roomNow(r))){endSession(r,'방장 요청 · 새 게임 준비');ack({ok:true});return}r.restartRequested=true;note(r,'🔄 방장이 새 게임 준비를 요청했습니다 · 현재 핸드 종료 후 전환');ack({ok:true});send(r)});
+ s.on('settings',({minutes,totalAssets,initialBuyin=50000,blindMinutes,maxBet=0,turnSeconds=17},ack=()=>{})=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||p?.pid!==r.hostPid)return ack({error:'방장만 게임설정을 바꿀 수 있습니다.'});if(r.startedAt)return ack({error:'게임 시작 전에서만 설정할 수 있습니다.'});if([minutes,totalAssets,initialBuyin,blindMinutes,maxBet,turnSeconds].some(v=>v===null||typeof v==='boolean'||v===''))return ack({error:'잘못된 게임설정입니다.'});if(typeof maxBet!=='number'&&(typeof maxBet!=='string'||!/^\d+$/.test(maxBet)))return ack({error:'잘못된 MAX 베팅입니다.'});minutes=Number(minutes);totalAssets=Number(totalAssets);blindMinutes=Number(blindMinutes);initialBuyin=Number(initialBuyin);maxBet=Number(maxBet);turnSeconds=Number(turnSeconds);if(!Number.isInteger(turnSeconds)||turnSeconds<5||turnSeconds>120)return ack({error:'턴 시간은 5~120초입니다.'});if(!Number.isInteger(minutes)||minutes<0||minutes>1440||!Number.isInteger(blindMinutes)||blindMinutes<0||blindMinutes>1440||![totalAssets,initialBuyin].every(n=>Number.isSafeInteger(n)&&n>=UNIT&&n<=100000000&&n%UNIT===0)||initialBuyin>totalAssets||!Number.isSafeInteger(maxBet)||maxBet<0||maxBet>100000000||maxBet%UNIT!==0)return ack({error:'잘못된 게임설정입니다.'});if(r.practice)initialBuyin=totalAssets;r.settings={minutes,totalAssets,initialBuyin,blindMinutes,maxBet,turnSeconds};r.handMaxBet=maxBet;r.players.forEach(x=>{x.stack=roomInitialBuyin(r);x.bank=Math.max(0,totalAssets-x.stack)});note(r,`⚙️ 게임설정 · ${durationLabel(r)} · 총자산 ${totalAssets.toLocaleString()} · 블라인드업 ${blindMinutes===0?'없음':blindMinutes+'분'}`);ack({ok:true});send(r)});
+ s.on('start',(arg,callback)=>{const ack=typeof arg==='function'?arg:typeof callback==='function'?callback:()=>{};let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;if(!r||p?.pid!==r.hostPid||r.startedAt||!['waiting','done'].includes(r.street))return;if(r.pauseAt)return ack({error:'계속하기 후 시작해주세요.'});if(r.practiceClosing)return ack({error:'연습방 종료 중입니다.'});if(r.practice)fillPracticeBots(r);const offline=leagueMembers(r).filter(x=>!x.socketId);if(offline.length){const message=offline.map(x=>x.name).join(', ')+'님 재연결 대기 중';s.emit('league:error',{message,readiness:true});return ack({error:message})}const leagueError=leagueStartError(r);if(leagueError){s.emit('league:error',{message:leagueError});ack({error:leagueError});leagueBroadcast(r);return}leagueSnapshot(r);let connected=r.players.filter(x=>x.socketId);if(connected.length<2){note(r,'게임 시작은 2명 이상 필요합니다.');send(r);return}const total=roomTotalAssets(r),dur=roomDurationMs(r);r.players.forEach(x=>{x.spectator=false;x.stack=roomInitialBuyin(r);x.bank=Math.max(0,total-x.stack);x.rebuyEligible=false;x.rebuyHandId=null;x.rebuyDeadline=null;x.inHand=false;x.fold=false;x.allin=false;x.bet=0;x.contrib=0;x.cards=[];x.acted=false});{/* V5.60: visual clockwise seats MUST use the same stable order as server betting order. Randomizing only sessionSeatOrder made the turn appear to jump around the table. */let order=r.players.filter(x=>x.socketId&&!x.spectator).map(x=>x.pid);r.sessionSeatOrder=order;}r.sessionRoster=r.players.filter(p=>p.socketId&&!p.spectator).map(p=>({pid:p.pid,name:p.name}));r.players.forEach(p=>{p.finalRank=null;p.eliminatedHandId=null});r.sessionResultId=null;r.restartRequested=false;r.startedAt=roomNow(r);r.endsAt=dur===null?null:r.startedAt+dur;r.finalRanking=null;r.showdown=null;r.showdownReveal=[];r.resultEndsAt=null;r.handSB=SB;r.handBB=BB;r.gameOver=false;r.nextHandAt=null;note(r,`▶️ ${durationLabel(r)} 새 세션 시작 · 전원 총자산 ${total.toLocaleString()} 초기화`);deal(r)});
 
  // V7.08: authenticated room chat, independent of poker state and presentation.
  s.on('chat:history',(callback)=>{
@@ -434,7 +463,7 @@ io.on('connection',s=>{
   const ack=typeof callback==='function'?callback:()=>{};
   const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
   if(!r||!p||p.socketId!==s.id||r.street!=='done'||!r.settlementComplete||!r.showdown||payload?.handId!==r.handId||payload?.resultAt!==r.showdown.at)return ack({error:'아직 정산 완료 상태가 아닙니다.'});
-  if(r.presentationTimeline&&Date.now()<r.presentationTimeline.presentationCompleteAt)return ack({error:'결과 연출 대기 중입니다.'});
+  if(r.presentationTimeline&&roomNow(r)<r.presentationTimeline.presentationCompleteAt)return ack({error:'결과 연출 대기 중입니다.'});
   p.presentedHand=r.handId;armAutoRebuy(r,p);ack({ok:true,rebuyDeadline:p.rebuyDeadline||null});send(r);
  });
  // V7.14.4: after a hand is fully settled, a player may voluntarily show their own
@@ -444,7 +473,7 @@ io.on('connection',s=>{
   const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
   if(!r||!p||p.socketId!==s.id||p.spectator||p.departed)return ack({error:'착석한 플레이어만 패를 공개할 수 있습니다.'});
   if(r.street!=='done'||!r.settlementComplete||!r.showdown||payload?.handId!==r.handId)return ack({error:'패가 끝난 뒤에만 공개할 수 있습니다.'});
-  if(r.presentationTimeline&&Date.now()<r.presentationTimeline.resultRevealAt)return ack({error:'결과 공개 후 패를 보여줄 수 있습니다.'});
+  if(r.presentationTimeline&&roomNow(r)<r.presentationTimeline.resultRevealAt)return ack({error:'결과 공개 후 패를 보여줄 수 있습니다.'});
   if(!p.inHand||!Array.isArray(p.cards)||p.cards.length!==2)return ack({error:'공개할 패가 없습니다.'});
   if((r.showdownReveal||[]).includes(p.pid))return ack({ok:true,already:true});
   r.showdownReveal=[...(r.showdownReveal||[]),p.pid];p.manualRevealHandId=r.handId;touchActivity(p);
@@ -461,6 +490,7 @@ io.on('connection',s=>{
  });
  s.on('pre-action',(data={},ack=()=>{})=>{
  const rp=roomPlayerForSocket(s);if(!rp)return ack({error:'방에 입장해주세요.'});const {r,p}=rp;
+ if(r.pauseAt)return ack({error:'연습이 일시정지되어 있습니다.'});
  if(data.type===null){p.preAction=null;send(r);return ack({ok:true})}
  if(data.handId!==r.handId||!['fold','allin','max'].includes(data.type)||!['preflop','flop','turn','river'].includes(r.street)||!canAct(r,p)||r.players[r.turn]===p)return ack({error:'현재 예약할 수 없습니다.'});
  if(data.type==='allin'&&availableBet(r,p)<p.stack)return ack({error:'MAX로 예약해주세요.'});
@@ -473,7 +503,7 @@ io.on('connection',s=>{
  removeMember(rp.r,target,'방장에 의해 현재 방에서 퇴장되었습니다.');ack({ok:true});
  });
  s.on('action',(data,ack)=>applyPokerAction(s,data,ack));
- s.on('disconnect',(reason,details)=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;connlog('disconnect',s.id,'reason='+reason,'room='+(r?.code||'-'),'pid='+(p?.pid||'-'),details?.message||'');if(!r||!p)return;/* stale disconnect must never erase a newer resumed socket */if(p.socketId===s.id){p.socketId=null;p.disconnectedAt=Date.now()}if(!r.players.some(x=>x.socketId))r.emptySince=Date.now();emitLobby();note(r,`${p.name} 연결 끊김 · 자동 재접속 대기`);send(r)});
+ s.on('disconnect',(reason,details)=>{let rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;connlog('disconnect',s.id,'reason='+reason,'room='+(r?.code||'-'),'pid='+(p?.pid||'-'),details?.message||'');if(!r||!p)return;/* stale disconnect must never erase a newer resumed socket */if(p.socketId===s.id){p.socketId=null;p.disconnectedAt=Date.now();if(r.practice&&p.pid===r.practiceOwner&&r.startedAt)setPracticePaused(r,true)}if(!r.players.some(x=>x.socketId))r.emptySince=Date.now();emitLobby();note(r,`${p.name} 연결 끊김 · 자동 재접속 대기`);send(r)});
 });
-setInterval(()=>{for(const r of rooms.values()){try{for(const p of [...r.players])if(!p.departed&&!p.leaveAfterHand&&!p.socketId&&p.disconnectedAt&&Date.now()-p.disconnectedAt>=90000)expirePlayer(r,p,'90초 재접속 유예 종료');expireIdlePlayers(r);if(!rooms.has(r.code))continue;if(r.startedAt){tickAutoRebuy(r);if(r.turn>=0&&r.turnDeadline&&Date.now()>=r.turnDeadline){let p=r.players[r.turn];if(p&&p.inHand&&!p.fold&&!p.allin){p.fold=true;p.acted=true;markAction(r,p,'timeout');note(r,`⏱️ ${p.name} 시간초과 · 자동 폴드`);advance(r);continue}}if(!r.runout)send(r);finishGameIfNeeded(r)}}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] roomTick',r.code,e?.stack||e)}}},1000);
+setInterval(()=>{for(const r of rooms.values()){try{for(const p of [...r.players])if(!p.departed&&!p.leaveAfterHand&&!p.socketId&&p.disconnectedAt&&Date.now()-p.disconnectedAt>=90000)expirePlayer(r,p,'90초 재접속 유예 종료');expireIdlePlayers(r);if(!rooms.has(r.code))continue;if(r.pauseAt){send(r);continue}if(r.startedAt){tickAutoRebuy(r);if(r.turn>=0&&r.turnDeadline&&roomNow(r)>=r.turnDeadline){let p=r.players[r.turn];if(p&&p.inHand&&!p.fold&&!p.allin){p.fold=true;p.acted=true;markAction(r,p,'timeout');note(r,`⏱️ ${p.name} 시간초과 · 자동 폴드`);advance(r);continue}}if(!r.runout)send(r);finishGameIfNeeded(r)}}catch(e){console.error(new Date().toISOString(),'[FATAL-GUARD] roomTick',r.code,e?.stack||e)}}},1000);
 server.listen(process.env.PORT||3000,()=>console.log('Friends Holdem on '+(process.env.PORT||3000)));
