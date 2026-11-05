@@ -217,6 +217,27 @@ function choose(v,random=Math.random,custom={}){
  const pf=preflop(v.hole.map(encode)),bb=v.bigBlind||Math.max(v.unit,v.minRaise);
  const unopened=!v.board.length&&v.highest<=bb;
  if(unopened)return opening(v,opponents,profile,c,rng,pass,fold,pf,bb);
+ // A preflop call purchases future decisions, not an immediate all-player
+ // showdown. Defend a sound range against one small open at deep stacks.
+ // Multiple raises, short stacks and large prices still use the equity gate.
+ if(!v.board.length){
+  const raises=opponents.reduce((n,p)=>n+(p.preflopRaises||0),0);
+  const raisers=opponents.filter(p=>p.preflopRaises>0||p.lastAction?.type==='raise');
+  const callers=opponents.filter(p=>p.preflopCalled).length;
+  const smallOpen=raises<=1&&raisers.length===1&&v.highest<=bb*3&&v.toCall<=bb*3&&
+   c.effective>=bb*40&&v.toCall<=c.effective*.04&&v.available>=v.toCall&&
+   !opponents.some(p=>p.allin||p.capped);
+  // Facing an UTG opener is different from opening ourselves. Tighten with
+  // many cold callers; offsuit AJ defence here requires a late position.
+  const strong=tex.pair&&tex.hi>=10||tex.hi===14&&tex.lo>=12;
+  const lateBroadway=pos>=.6&&callers<=2&&((tex.hi===14&&tex.lo===11)||
+   tex.suited&&tex.hi>=13&&tex.lo>=11);
+  if(smallOpen&&(strong||lateBroadway)){
+   const premium=tex.pair&&tex.hi>=12||tex.hi===14&&tex.lo===13;
+   if(premium&&rng()<profile.aggression)return raiseTo(v,opponents,v.highest*(pos>=.6?3:3.5),pass);
+   return pass;
+  }
+ }
  const e=estimate(v,rng),allCommitted=opponents.every(p=>p.allin||p.capped||p.stack===0);
  const price=e.call/Math.max(1,e.eligiblePot);
  const realization=v.board.length===5||e.call>=v.stack||allCommitted?1:clamp(.83+pos*.11-(opponents.length-1)*.015,.72,.96);
@@ -266,4 +287,4 @@ function choose(v,random=Math.random,custom={}){
  if(max-target<=Math.max(bb,v.stack*.12)&&e.equity>.74&&max<=effective)target=max;
  return raiseTo(v,opponents,target,pass);
 }
-module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'4.0.0'};
+module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'4.0.1'};
