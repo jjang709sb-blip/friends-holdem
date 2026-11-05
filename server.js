@@ -404,9 +404,15 @@ io.on('connection',s=>{
  s.on('practice:cards',(data={},ack=()=>{})=>{
   const rp=roomPlayerForSocket(s),r=rp?.r,p=rp?.p;
   if(!r?.practice||p?.pid!==r.practiceOwner||p.socketId!==s.id)return ack({error:'연습방에서만 사용할 수 있습니다.'});
-  if(data.handId!==r.handId||r.street!=='done'||!r.settlementComplete||roomNow(r)<(r.presentationTimeline?.resultRevealAt||0))return ack({error:'이번 핸드 결과가 공개된 뒤 확인할 수 있습니다.'});
-  // Owner-only review payload, never added to the bot observation or future state.
-  touchActivity(p);ack({ok:true,handId:r.handId,players:r.players.filter(x=>x.bot&&x.cards?.length===2).map(x=>({pid:x.pid,name:x.name,style:practicePolicy.publicProfile(x.botProfile).label,cards:x.cards,fold:x.fold}))});
+  if(data.handId!==r.handId||r.street!=='done'||!r.settlementComplete||!r.showdown)return ack({error:'이번 핸드가 끝난 뒤 봇 좌석을 눌러주세요.'});
+  // A fold ends the hand immediately. Showdown still follows its public result timeline.
+  if(r.showdown.showdown!==false&&roomNow(r)<(r.presentationTimeline?.resultRevealAt||0))return ack({error:'결과 공개 후 봇 좌석을 눌러주세요.'});
+  const target=r.players.find(x=>x.pid===data.pid&&x.bot&&x.cards?.length===2);
+  if(!target)return ack({error:'이번 핸드에 패를 받은 봇을 선택해주세요.'});
+  // Presentation only; winner/refund accounting and the bot observation never change.
+  if(!(r.showdownReveal||[]).includes(target.pid))r.showdownReveal=[...(r.showdownReveal||[]),target.pid];
+  target.manualRevealHandId=r.handId;touchActivity(p);send(r);
+  ack({ok:true,handId:r.handId,pid:target.pid});
  });
  s.on('rooms:list',()=>s.emit('rooms:list',lobbyRooms()));
  s.on('create',({name},ack)=>{if(roomPlayerForSocket(s))return ack({error:'이미 방에 입장 중입니다.'});if(!validNickname(name))return ack({error:'닉네임을 입력해주세요.'});let code;do{code=crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(code));let cleanName=String(name||'Player').trim().slice(0,14)||'Player';let r={code,roomName:cleanName+'의 방',practice:name===PRACTICE_NAME,players:[],hostPid:null,button:-1,street:'waiting',board:[],turn:-1,highest:0,minRaise:BB,handSB:SB,handBB:BB,startedAt:null,log:[],endsAt:null,gameOver:false,turnDeadline:null,lastAction:null,actionSeq:0,nextHandTimer:null,nextHandAt:null,runout:false,showdown:null,showdownReveal:[],resultEndsAt:null,emptySince:null,finalRanking:null,sbIndex:null,bbIndex:null,settings:{minutes:30,totalAssets:200000,initialBuyin:50000,blindMinutes:5,maxBet:0},sessionSeatOrder:[],restartRequested:false};if(r.practice){r.settings.totalAssets=500000;r.settings.initialBuyin=500000}r.settings.turnSeconds=17;rooms.set(code,r);addPlayer(r,cleanName,s,res=>{if(res.error){rooms.delete(code);return ack(res)}r.hostPid=res.pid;if(r.practice){r.practiceOwner=res.pid;fillPracticeBots(r);send(r)}ack(res);if(!r.practice)emitLobby()})});
