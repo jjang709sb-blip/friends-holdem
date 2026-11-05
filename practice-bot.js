@@ -1,5 +1,5 @@
 'use strict';
-// Advanced bounded-sampling policy v3. No room, network, actual deck, or other
+// Advanced bounded-sampling policy v4. No room, network, actual deck, or other
 // private cards enter this module. This is a heuristic agent, NOT a GTO solver.
 const {performance}=require('node:perf_hooks');
 const RANKS='23456789TJQKA',SUITS='SHDC';
@@ -61,6 +61,81 @@ function position(v){
  const ordered=seats.sort((a,b)=>((a-v.button-1+n)%n)-((b-v.button-1+n)%n));
  const at=ordered.indexOf(v.position);return ordered.length>1?at/(ordered.length-1):.5;
 }
+// Mixed strategies preserve identity without making every weak hand a fold.
+const MIX=Object.freeze({
+ taesan:{limp:.28,creative:.035},maengho:{limp:.42,creative:.17},
+ yeou:{limp:.48,creative:.24},baksa:{limp:.32,creative:.06},
+ bulgom:{limp:.85,creative:.025},beongae:{limp:.88,creative:.30},
+ bawi:{limp:.12,creative:.012},neung:{limp:.44,creative:.20}
+});
+function texture(hole){
+ const cards=hole.map(encode),[hi,lo]=cards.map(rank).sort((a,b)=>b-a);
+ const suited=suit(cards[0])===suit(cards[1]),gap=hi-lo,pair=hi===lo;
+ const speculative=pair?.85:suited?(gap<=1?.85:gap<=2?.65:hi===14?.65:.28):gap<=1?.32:gap<=2?.20:.04;
+ return {hi,lo,suited,pair,speculative};
+}
+function context(v,opponents){
+ const pos=position(v),mix=MIX[v.botProfile]||MIX.baksa;
+ const heroTotal=v.bet+v.stack,maxOpponent=Math.max(...opponents.map(p=>p.bet+p.stack));
+ const effective=Math.min(v.stack,Math.max(0,maxOpponent-v.bet));
+ const cover=opponents.filter(p=>heroTotal>1.8*(p.bet+p.stack)).length/opponents.length;
+ const lead=clamp((heroTotal/Math.max(1,maxOpponent)-1)/3)*cover;
+ const foldRead=opponents.reduce((n,p)=>n+((p.tendencies?.foldRate??.5)-.5)*(p.tendencies?.confidence||0),0)/opponents.length;
+ return {pos,mix,effective,lead,foldRead,tex:texture(v.hole)};
+}
+function raiseTo(v,opponents,target,fallback){
+ const callable=opponents.filter(p=>!p.allin&&!p.capped&&p.stack>Math.max(0,v.highest-p.bet));
+ if(!callable.length)return fallback;
+ const max=v.bet+v.available,min=v.highest+v.minRaise;
+ const ceiling=Math.min(max,Math.max(...callable.map(p=>p.bet+p.stack)));
+ if(ceiling<=v.highest||(ceiling<min&&ceiling!==max))return fallback;
+ let amount=Math.min(ceiling,Math.max(min,Math.round(target/v.unit)*v.unit));
+ // A true short all-in/MAX can contain a non-unit remainder.
+ if(amount!==max)amount=Math.floor(amount/v.unit)*v.unit;
+ if(amount<=v.highest||(amount<min&&amount!==max))return fallback;
+ return {type:amount===max?(v.available===v.stack?'allin':'max'):'raise',amount};
+}
+function opening(v,opponents,profile,c,rng,pass,fold,pf,bb){
+ const {pos,mix,tex,lead,foldRead}=c;
+ const limpers=opponents.filter(p=>p.preflopCalled).length;
+ const cost=Math.min(v.toCall,v.available),risk=cost/Math.max(1,v.stack);
+ const entry=profile.entry-pos*profile.steal;
+ const core=clamp((pf-entry+.10)/.20);
+ const cheap=risk<=.08;
+ const price=cost/Math.max(1,v.pot+cost);
+ const crowd=Math.min(3,limpers)/3;
+ const speculative=cheap?mix.limp*(.12+tex.speculative*.72)*( .65+pos*.5+crowd*.35):0;
+ const bargain=cheap&&price<.17?mix.limp*(.17-price)*1.5:0;
+ const steal=(mix.creative+lead*.20)*(.15+pos*.85)*(tex.speculative*.6+.25)*clamp(1+foldRead, .7,1.3)/(1+limpers*.3);
+ // Short stacks cannot repeatedly limp away a large share with speculative trash.
+ const playable=pf>=.76||risk<=.12||pf>=entry+.08;
+ const enter=playable?clamp(core+speculative+bargain):0;
+ const raiseChance=playable?clamp(core*profile.aggression+(cheap?steal:0),0,.97):0;
+ const draw=rng();
+ if(draw<raiseChance&&(core>.1||cheap)){
+  const size=bb*(2.2*profile.sizing+.65*limpers+(lead>0?.45*lead:0));
+  return raiseTo(v,opponents,size,pf>=entry?pass:fold);
+ }
+ if(v.toCall===0)return pass;
+ if(draw<Math.max(raiseChance,enter))return pass;
+ return fold;
+}
+// One-card completion scan, only on turn and only for real straight/flush draws.
+// Capped implied-odds credit is not a claim that every out is clean or paid off.
+function drawCredit(v,c,opponents,call){
+ if(v.board.length!==4||call<=0||call>v.pot||call>c.effective*.25||opponents.every(p=>p.allin||p.capped||!p.stack))return 0;
+ const own=v.hole.map(encode),board=v.board.map(encode),known=new Set([...own,...board]);
+ const current=Math.floor(evaluate([...own,...board])/15**5);
+ if(current>=4)return 0;
+ let outs=0;
+ for(let card=0;card<52;card++)if(!known.has(card)){
+  const run=[...board,card],score=evaluate([...own,...run]),cat=Math.floor(score/15**5);
+  if((cat===4||cat===5)&&score>evaluate(run))outs++;
+ }
+ const behind=Math.max(0,c.effective-call);
+ return Math.min(.035,outs/46*.12)*clamp(behind/Math.max(1,call*6))*(.65+c.pos*.35);
+}
+
 // Public tendency is evidence of pressure, never proof that a bet is a bluff.
 function pressureRead(op){
  const t=op.riverPressure;
@@ -82,6 +157,12 @@ function rangeWeight(pair,op,board){
   // Retain bluff combinations; never infer a single certain opponent hand.
   const read=board.length===5&&op.lastAction?.checkedToBet?pressureRead(op):0;
   weight*=cat>=2?1:cat===1?.45+read*.3:draw?.35:.07+read*.65;
+ }
+ const t=op.tendencies;
+ if(t&&t.entries>=5){
+  const confidence=t.entries/(t.entries+16);
+  const loose=clamp((t.entryRate-.38)*confidence,-.15,.25);
+  weight=Math.pow(weight,clamp(1-loose*1.8,.55,1.3));
  }
  return Math.max(.005,weight);
 }
@@ -132,29 +213,22 @@ function choose(v,random=Math.random,custom={}){
  if(v.hole.length!==2)return fold;
  const opponents=v.players.filter(p=>p.inHand&&!p.fold&&p.seat!==v.position);
  if(!opponents.length)return pass;
- const pos=position(v),pf=preflop(v.hole.map(encode)),bb=v.bigBlind||Math.max(v.unit,v.minRaise);
+ const c=context(v,opponents),{pos,lead,mix,tex}=c;
+ const pf=preflop(v.hole.map(encode)),bb=v.bigBlind||Math.max(v.unit,v.minRaise);
  const unopened=!v.board.length&&v.highest<=bb;
- // Position-sensitive opening discipline; avoid cheap multiway trash calls.
- if(unopened){
-  const entry=profile.entry-pos*profile.steal;
-  if(pf<entry)return fold;
-  // Unacted players are not eight guaranteed showdown callers.
-  const max=v.bet+v.available,min=v.highest+v.minRaise;
-  if(max>v.highest&&rng()<profile.aggression){
-   const target=Math.min(max,Math.max(min,Math.round(bb*(2.3*profile.sizing+.6*opponents.filter(p=>p.lastAction?.type==='call').length)/v.unit)*v.unit));
-   return {type:target===max?(v.available===v.stack?'allin':'max'):'raise',amount:target};
-  }
-  return pass;
- }
+ if(unopened)return opening(v,opponents,profile,c,rng,pass,fold,pf,bb);
  const e=estimate(v,rng),allCommitted=opponents.every(p=>p.allin||p.capped||p.stack===0);
  const price=e.call/Math.max(1,e.eligiblePot);
  const realization=v.board.length===5||e.call>=v.stack||allCommitted?1:clamp(.83+pos*.11-(opponents.length-1)*.015,.72,.96);
- const pressure=e.call/Math.max(1,v.stack);
- const adjusted=e.potEquity*realization+profile.callBias*Math.max(0,1-pressure*1.8);
+ const pressure=e.call/Math.max(1,Math.min(v.stack,c.effective)||v.stack);
+ const implied=drawCredit(v,c,opponents,e.call);
+ const adjusted=e.potEquity*realization+profile.callBias*Math.max(0,1-pressure*2.5)+implied;
  const margin=(v.board.length===5?.012:.025)+profile.tightness;
  const marginal=adjusted>=price+margin-.055;
+ const speculative=!v.board.length&&tex.speculative>=.2&&pressure<.065&&price<.24&&
+  adjusted>=price+margin-.045&&rng()<mix.limp*(.55+pos*.45);
  const bluffAttempt=opponents.length<=2&&pos>.45&&marginal&&pressure<.18&&rng()<profile.bluff;
- if(!free&&adjusted<price+margin&&!bluffAttempt)return fold;
+ if(!free&&adjusted<price+margin&&!bluffAttempt&&!speculative)return fold;
  const max=v.bet+v.available,min=v.highest+v.minRaise;
  // No meaningless raise into a pot where nobody can contribute more.
  const callable=opponents.filter(p=>!p.allin&&!p.capped&&p.stack>Math.max(0,v.highest-p.bet));
@@ -162,7 +236,9 @@ function choose(v,random=Math.random,custom={}){
  const edge=e.equity-1/(opponents.length+1);
  const value=v.board.length?e.equity>(opponents.length===1?.64:.48)&&edge>.20:pf>.77||(unopened&&pf>.57&&pos>.65);
  const semi=v.board.length>0&&v.board.length<5&&e.equity>.30&&e.equity<.58;
- const bluff=bluffAttempt||opponents.length<=2&&pos>.45&&!allCommitted&&rng()<profile.bluff*(semi?1.6:.5)&&v.toCall<Math.max(bb,v.pot*.35);
+ // Multiway bluffing is rarer; coverage raises initiative, never call equity.
+ const pressureChance=(profile.bluff*(semi?1.6:.5)+lead*(.08+mix.creative*.55))*clamp(1+c.foldRead*1.5,.6,1.4);
+ const bluff=bluffAttempt||opponents.length<=2&&pos>.45&&!allCommitted&&rng()<pressureChance&&v.toCall<Math.max(bb,v.pot*.35);
  const hero=v.players.find(p=>p.seat===v.position);
  // A river trap needs actual private-card value and someone still to act behind.
  // Keep all strong checks available for a later value call/raise, not a forced loss.
@@ -176,7 +252,7 @@ function choose(v,random=Math.random,custom={}){
   if(behind.length&&contributes&&rng()<chance)return pass;
  }
  const checkRaise=!free&&v.board.length===5&&hero?.lastAction?.type==='check'&&value&&e.equity>.78;
- if(!(value||bluff)||rng()>profile.aggression+(value?.25:0)+(checkRaise?.15:0))return pass;
+ if(!(value||bluff)||rng()>profile.aggression+(value?.25:0)+(checkRaise?.15:0)+lead*.12)return pass;
  if(free&&value&&e.equity>.8&&v.board.length<5&&rng()<profile.trap)return pass;
  let target;
  if(!v.board.length){
@@ -185,14 +261,9 @@ function choose(v,random=Math.random,custom={}){
   const fraction=bluff?.55:e.equity>.82?.85:e.equity>.66?.65:.42;
   target=v.highest+(v.pot+e.call)*fraction*profile.sizing;
  }
- // Avoid putting chips beyond every opponent's effective stack; MAX stays distinct.
+ // Effective stack, legal minimum, MAX and true all-in share one path.
  const effective=Math.max(...callable.map(p=>p.bet+p.stack));
- const ceiling=Math.min(max,Math.max(v.highest,effective));
- if(ceiling<min&&ceiling!==max)return pass;
- target=Math.min(ceiling,Math.max(min,Math.round(target/v.unit)*v.unit));
- target=Math.floor(target/v.unit)*v.unit;
- if(target<=v.highest||(target<min&&target!==max))return pass;
  if(max-target<=Math.max(bb,v.stack*.12)&&e.equity>.74&&max<=effective)target=max;
- return {type:target===max?(v.available===v.stack?'allin':'max'):'raise',amount:target};
+ return raiseTo(v,opponents,target,pass);
 }
-module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'3.0.0'};
+module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'4.0.0'};
