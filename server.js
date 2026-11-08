@@ -13,6 +13,7 @@ const io=new Server(server,{
   pingInterval:20000,pingTimeout:60000,connectTimeout:45000,
   connectionStateRecovery:{maxDisconnectionDuration:5*60*1000,skipMiddlewares:true}
 });
+const hulaGame=require('./hula-room')(io);
 const rooms=new Map();
 const practicePolicy=require('./practice-bot');
 const {observation:practiceObservation,recordAction:recordPracticeAction}=require('./practice-room');
