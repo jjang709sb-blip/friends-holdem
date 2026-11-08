@@ -217,25 +217,42 @@ function choose(v,random=Math.random,custom={}){
  const pf=preflop(v.hole.map(encode)),bb=v.bigBlind||Math.max(v.unit,v.minRaise);
  const unopened=!v.board.length&&v.highest<=bb;
  if(unopened)return opening(v,opponents,profile,c,rng,pass,fold,pf,bb);
- // A preflop call purchases future decisions, not an immediate all-player
- // showdown. Defend a sound range against one small open at deep stacks.
- // Multiple raises, short stacks and large prices still use the equity gate.
+ // Price-sensitive range decisions for ordinary single opens. Unacted
+ // players create squeeze risk, not eight guaranteed showdown opponents.
  if(!v.board.length){
   const raises=opponents.reduce((n,p)=>n+(p.preflopRaises||0),0);
   const raisers=opponents.filter(p=>p.preflopRaises>0||p.lastAction?.type==='raise');
-  const callers=opponents.filter(p=>p.preflopCalled).length;
-  const smallOpen=raises<=1&&raisers.length===1&&v.highest<=bb*3&&v.toCall<=bb*3&&
-   c.effective>=bb*40&&v.toCall<=c.effective*.04&&v.available>=v.toCall&&
-   !opponents.some(p=>p.allin||p.capped);
-  // Facing an UTG opener is different from opening ourselves. Tighten with
-  // many cold callers; offsuit AJ defence here requires a late position.
-  const strong=tex.pair&&tex.hi>=10||tex.hi===14&&tex.lo>=12;
-  const lateBroadway=pos>=.6&&callers<=2&&((tex.hi===14&&tex.lo===11)||
-   tex.suited&&tex.hi>=13&&tex.lo>=11);
-  if(smallOpen&&(strong||lateBroadway)){
-   const premium=tex.pair&&tex.hi>=12||tex.hi===14&&tex.lo===13;
-   if(premium&&rng()<profile.aggression)return raiseTo(v,opponents,v.highest*(pos>=.6?3:3.5),pass);
-   return pass;
+  if(raises<=1&&raisers.length===1&&v.highest<=bb*6&&v.available>v.toCall&&
+    !opponents.some(p=>p.allin||p.capped)){
+   const opener=raisers[0];
+   // A deep uninvolved seat must not manufacture implied odds against a
+   // short opener: use the opponent who has actually put in the raise.
+   const effective=Math.min(v.stack,Math.max(0,opener.bet+opener.stack-v.bet));
+   const risk=v.toCall/Math.max(1,effective);
+   if(risk<.18){
+    const callers=opponents.filter(p=>p.preflopCalled).length;
+    const pending=opponents.filter(p=>!p.acted&&!p.preflopCalled&&!p.preflopRaises).length;
+    const n=v.players.length,openerPos=((opener.seat-v.button-1+n)%n)/Math.max(1,n-1);
+    const early=openerPos<.5?.065:0;
+    const deep=clamp(1-risk/.10);
+    const price=v.toCall/Math.max(1,v.pot+v.toCall);
+    const bargain=clamp(.30-price,0,.22)*(.3+tex.speculative*.5);
+    const broadway=tex.hi>=11&&tex.lo>=10;
+    const quality=tex.pair?.50+(tex.hi-2)*.04:broadway?.60+(tex.hi+tex.lo-21)*.035+(tex.suited?.07:0):pf;
+    const evidence=opener.tendencies;
+    const tightRead=evidence&&evidence.entries>=8?clamp((.35-evidence.entryRate)*evidence.entries/(evidence.entries+16),0,.12):0;
+    const score=quality+mix.limp*.13+pos*.10+deep*tex.speculative*.22+bargain-
+      risk*2.0-Math.log2(Math.max(1,v.highest/bb))*.035-early-pending*.012-
+      profile.tightness-tightRead-(!tex.suited&&!tex.pair?callers*.025:0);
+    const enter=clamp((score-.25)/.42);
+    const roll=rng();
+    if(roll>=enter)return fold;
+    const premium=tex.pair&&tex.hi>=12||tex.hi===14&&tex.lo===13;
+    const creative=risk<.04&&callers<=1&&pos>.6&&tex.suited&&tex.speculative>=.6;
+    if(premium&&rng()<profile.aggression||creative&&rng()<mix.creative*.20)
+     return raiseTo(v,opponents,v.highest*(pos>=.6?3:3.5)+callers*v.highest,pass);
+    return pass;
+   }
   }
  }
  const e=estimate(v,rng),allCommitted=opponents.every(p=>p.allin||p.capped||p.stack===0);
@@ -287,4 +304,4 @@ function choose(v,random=Math.random,custom={}){
  if(max-target<=Math.max(bb,v.stack*.12)&&e.equity>.74&&max<=effective)target=max;
  return raiseTo(v,opponents,target,pass);
 }
-module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'4.0.1'};
+module.exports={choose,strength,estimate,evaluate,encode,PROFILES,getProfile,publicProfile,version:'4.0.2'};
