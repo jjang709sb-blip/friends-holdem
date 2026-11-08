@@ -1,6 +1,8 @@
 'use strict';
 const crypto=require('crypto');
 const R='A23456789TJQK',S='SHDC',LIMIT=6,TURN=45000,GRACE=90000;
+// Temporary private beta: this is an entry phrase, not account authentication.
+const PRIVATE_CREATE_PHRASE='개발자훌라방';
 const rank=c=>R.indexOf(c[0])+1;
 function meldKind(cards){
  if(!Array.isArray(cards)||!cards.length||new Set(cards).size!==cards.length||cards.some(c=>typeof c!=='string'||c.length!==2||!R.includes(c[0])||!S.includes(c[1])))return null;
@@ -13,7 +15,8 @@ function shuffled(){const a=[...S].flatMap(s=>[...R].map(r=>r+s));for(let i=a.le
 const points=cards=>cards.reduce((n,c)=>n+Math.min(10,rank(c)),0);
 function attach(io){
  const ns=io.of('/hula'),rooms=new Map();
- const list=()=>[...rooms.values()].filter(r=>r.players.some(p=>p.sid)).map(r=>({code:r.code,name:r.name,game:'hula',count:r.players.length,status:r.phase==='playing'?'게임중':'대기중'}));
+ // Private beta rooms never appear in the public lobby or room discovery events.
+ const list=()=>[];
  const lobby=()=>ns.emit('rooms:list',list());
  function note(r,message){r.log.push(message);if(r.log.length>30)r.log.shift()}
  function state(r,p){return {game:'hula',code:r.code,name:r.name,you:p.id,host:r.host,revision:r.revision,round:r.round,phase:r.phase,turn:r.players[r.turn]?.id||null,step:r.step,deadline:r.deadline,serverNow:Date.now(),stock:r.deck.length,discard:r.discard.at(-1)||null,discardCount:r.discard.length,melds:r.melds.map(m=>({...m,cards:m.cards.slice()})),hand:p.hand.slice(),players:r.players.map(x=>({id:x.id,name:x.name,count:x.hand.length,registered:x.registered,connected:!!x.sid,score:x.score})),result:r.result,log:r.log.slice()}}
@@ -47,7 +50,7 @@ function attach(io){
   s.emit('rooms:list',list());let last=0;
   function handle(event,fn){s.on(event,(data,ack)=>{if(typeof data==='function'){ack=data;data={}}ack=typeof ack==='function'?ack:()=>{};try{if(Date.now()-last<40)throw Error('잠시 후 다시 눌러주세요.');last=Date.now();const result=fn(data&&typeof data==='object'?data:{});ack(result||{ok:true})}catch(e){ack({error:e.message})}})}
   handle('rooms:list',()=>{s.emit('rooms:list',list());return {ok:true}});
-  handle('create',d=>{if(current(s))throw Error('이미 훌라방에 있습니다.');if(typeof d.name!=='string'||!d.name.trim())throw Error('닉네임을 입력해주세요.');const name=d.name.trim().slice(0,14);let code;do{code='H'+crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(code));const p={id:crypto.randomBytes(8).toString('hex'),token:crypto.randomBytes(24).toString('hex'),name,hand:[],score:0,registered:false};const r={code,name:name+'의 훌라방',players:[p],host:p.id,phase:'waiting',step:'draw',round:0,turn:0,revision:0,deck:[],discard:[],melds:[],result:null,log:[],lastActivity:Date.now(),deadline:null};rooms.set(code,r);bind(s,r,p);send(r);lobby();return {ok:true,code,token:p.token,pid:p.id}});
+  handle('create',d=>{if(current(s))throw Error('이미 훌라방에 있습니다.');if(d.name!==PRIVATE_CREATE_PHRASE)throw Error('훌라방은 아직 비공개 테스트 중입니다.');const name='개발자';let code;do{code='H'+crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(code));const p={id:crypto.randomBytes(8).toString('hex'),token:crypto.randomBytes(24).toString('hex'),name,hand:[],score:0,registered:false};const r={code,name:name+'의 훌라방',players:[p],host:p.id,phase:'waiting',step:'draw',round:0,turn:0,revision:0,deck:[],discard:[],melds:[],result:null,log:[],lastActivity:Date.now(),deadline:null};rooms.set(code,r);bind(s,r,p);send(r);lobby();return {ok:true,code,token:p.token,pid:p.id}});
   handle('join',d=>{const r=rooms.get(String(d.code||'').toUpperCase());if(!r)throw Error('방이 종료되었거나 존재하지 않습니다.');const occupied=current(s);if(occupied&&occupied.r!==r)throw Error('먼저 현재 방에서 나가주세요.');let p=r.players.find(x=>typeof d.token==='string'&&x.token===d.token);if(occupied&&p!==occupied.p)throw Error('이미 착석 중입니다.');if(!p){if(r.phase==='playing')throw Error('게임 중에는 새로 입장할 수 없습니다.');if(r.players.length>=LIMIT)throw Error('6명이 모두 찼습니다.');if(typeof d.name!=='string'||!d.name.trim())throw Error('닉네임을 입력해주세요.');const name=d.name.trim().slice(0,14);if(r.players.some(x=>x.name===name))throw Error('이미 사용 중인 닉네임입니다.');p={id:crypto.randomBytes(8).toString('hex'),token:crypto.randomBytes(24).toString('hex'),name,hand:[],registered:false,score:0};r.players.push(p)}bind(s,r,p);r.lastActivity=Date.now();send(r);lobby();return {ok:true,code:r.code,token:p.token,pid:p.id}});
   handle('start',()=>{const c=current(s);if(!c||c.r.host!==c.p.id)throw Error('방장만 시작할 수 있습니다.');start(c.r);c.r.lastActivity=Date.now();send(c.r);lobby()});
   handle('action',d=>{const c=current(s);if(!c)throw Error('방에 입장해주세요.');if(d.revision!==c.r.revision)throw Error('상태가 바뀌었습니다. 다시 선택해주세요.');move(c.r,c.p,d);c.r.lastActivity=Date.now();send(c.r)});
