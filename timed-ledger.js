@@ -1,47 +1,69 @@
 'use strict';
-// All point values are integral twelfths of a point. No binary fractions.
-const crypto=require('crypto');
-const SCALE=12n, BLOCK=120000n;
-const id=()=>crypto.randomBytes(12).toString('hex');
-function integer(v){if(typeof v==='bigint')return v;if(typeof v==='number'&&Number.isSafeInteger(v))return BigInt(v);if(typeof v==='string'&&/^-?\d+$/.test(v))return BigInt(v);throw Error('정수 금액이 아닙니다.');}
-function floorDiv(n,d){const q=n/d;return n<0n&&n%d?q-1n:q;}
-function create(){return {version:0,rows:{},games:{},history:[],pot:null};}
-function total(l){return Object.values(l.rows).reduce((s,r)=>s+integer(r.units),0n);}
+// Monetary source values are exact integer twelfths of a won. Suggested payments never modify them.
+const SCALE=12n,BLOCK=120000n,HALF=60000n;
+const integer=v=>{if(typeof v==='bigint')return v;if(typeof v==='number'&&Number.isSafeInteger(v))return BigInt(v);if(typeof v==='string'&&/^-?\d+$/.test(v))return BigInt(v);throw Error('정수 금액 오류');};
+const floorDiv=(n,d)=>n/d-(n<0n&&n%d?1n:0n),abs=n=>n<0n?-n:n;
+const total=l=>Object.values(l.rows).reduce((n,r)=>n+integer(r.units),0n);
+function create(){return {schema:2,version:0,rows:{},games:{},history:[],confirmed:[],calculation:{rows:[],fixed:'0',sum:'0',warning:null},calculationCount:0};}
+function compare(a,b){for(let i=0;i<4;i++)if(a[i]!==b[i])return a[i]<b[i]?-1:1;return 0;}
+// For a fixed number of rounded-up rows, lexicographic additive costs dominate.
+// The fourth component is a monotone max; replacing a prefix by a smaller max cannot worsen its suffix.
+function optimize(entries,target){
+ const rows=entries.slice().sort((a,b)=>a.pid.localeCompare(b.pid)).map(x=>{const raw=integer(x.raw),base=floorDiv(raw,BLOCK)*BLOCK;return {...x,raw,base,rem:raw-base};});
+ const sumBase=rows.reduce((n,r)=>n+r.base,0n),need=(target-sumBase)/BLOCK;
+ if((target-sumBase)%BLOCK||need<0n||need>BigInt(rows.filter(r=>r.rem).length))return null;
+ const k=Number(need);let dp=new Map([[0,{cost:[0n,0n,0n,0n],path:''}]]);
+ for(const r of rows){const next=new Map();for(const [j,old]of dp)for(const up of r.rem?[0,1]:[0]){if(j+up>k)continue;const value=r.base+BigInt(up)*BLOCK,error=abs(value-r.raw),excess=r.raw<0n&&r.raw-value>HALF?r.raw-value-HALF:0n;
+  const cost=[old.cost[0]+(excess?1n:0n),old.cost[1]+excess,old.cost[2]+error,old.cost[3]>error?old.cost[3]:error],candidate={cost,path:old.path+up},prior=next.get(j+up);
+  if(!prior||compare(cost,prior.cost)<0||(compare(cost,prior.cost)===0&&candidate.path<prior.path))next.set(j+up,candidate);
+ }dp=next;}
+ const best=dp.get(k);if(!best)return null;
+ return {rows:rows.map((r,i)=>({pid:r.pid,name:r.name,raw:r.raw.toString(),amount:(r.base+BigInt(best.path[i])*BLOCK).toString()})),cost:best.cost.map(String)};
+}
+function recompute(l){
+ if(total(l)!==0n)throw Error('원본 합계가 0이 아닙니다. 임의 보정하지 않았습니다.');
+ const fixed=(l.confirmed||[]).reduce((n,x)=>n+integer(x.amount),0n);
+ const entries=Object.values(l.rows).filter(r=>r.open!==false).map(r=>({pid:r.pid,name:r.name,raw:(integer(r.units)-integer(r.closedRaw||0)).toString()}));
+ let result=optimize(entries,-fixed),warning=null;
+ if(!result){
+  warning='확정액 때문에 정상 내림·올림 후보로 합계를 맞출 수 없습니다. 임시 제안만 표시하며 추가 정산 완료를 차단합니다.';
+  const rows=entries.slice().sort((a,b)=>a.pid.localeCompare(b.pid)).map(r=>({...r,amount:floorDiv(integer(r.raw)+HALF,BLOCK)*BLOCK}));
+  if(!rows.length&&fixed!==0n)throw Error('확정액 합계 오류');
+  if(rows.length){let steps=(-fixed-rows.reduce((n,r)=>n+r.amount,0n))/BLOCK;const n=BigInt(rows.length),q=steps/n,rem=steps%n;rows.forEach((r,i)=>r.amount+=(q+(BigInt(i)<abs(rem)?(rem<0n?-1n:1n):0n))*BLOCK);}
+  result={rows:rows.map(r=>({...r,amount:r.amount.toString()})),cost:null};
+ }
+ const sum=fixed+result.rows.reduce((n,r)=>n+integer(r.amount),0n);if(sum!==0n)throw Error('자동정산 합계 오류');
+ l.calculation={...result,fixed:fixed.toString(),sum:'0',warning,version:l.version};l.calculationCount=(l.calculationCount||0)+1;return l.calculation;
+}
+function migrate(l){
+ if(l.schema===2)return l;
+ l.legacy={pot:l.pot||null,history:(l.history||[]).filter(x=>x.kind==='pot')};delete l.pot;
+ l.history=(l.history||[]).filter(x=>x.kind!=='pot');l.confirmed=[];l.schema=2;
+ for(const r of Object.values(l.rows)){r.closedRaw='0';r.open=true;r.segmentGames=[];r.segment=1;}
+ l.migrationNote='이전 원장 잔액을 변경하지 않고 이월했습니다. 과거 정산 기록은 별도 보관됩니다.';recompute(l);return l;
+}
+function settleDeltas(l,gameId,changes,meta={}){
+ if(l.games[gameId])return false;
+ if(total(l)!==0n||changes.reduce((n,x)=>n+integer(x.delta),0n)!==0n)throw Error('칩/원본 합계 불일치 — 반영 보류');
+ if(new Set(changes.map(x=>x.pid)).size!==changes.length)throw Error('중복 참가자');
+ for(const p of changes){let r=l.rows[p.pid];if(!r)r=l.rows[p.pid]={pid:p.pid,name:p.name,units:'0',closedRaw:'0',games:0,open:true,segment:1,segmentGames:[]};
+  if(r.open===false){r.open=true;r.segment++;r.segmentGames=[];}
+  r.units=(integer(r.units)+integer(p.delta)).toString();r.games++;(r.segmentGames||(r.segmentGames=[])).push(gameId);
+ }
+ l.games[gameId]=true;l.version++;l.history.push({kind:'game',id:gameId,...meta,players:changes,at:Date.now()});recompute(l);return true;
+}
 function settle(l,gameId,players,divisor){
  if(![3,4].includes(divisor))throw Error('정산 비율 오류');
- if(l.games[gameId])return false;
- if(l.pot&&l.pot.phase!=='complete')throw Error('누적정산팟 진행 중');
- const seen=new Set();let sum=0n;
- const changes=players.map(p=>{if(!p.pid||seen.has(p.pid))throw Error('참가자 중복');seen.add(p.pid);const buyin=integer(p.buyin),cash=integer(p.cash);if(buyin<0n||cash<0n)throw Error('음수 칩');const net=cash-buyin;sum+=net;return {pid:p.pid,name:p.name,buyin:buyin.toString(),cash:cash.toString(),net:net.toString(),delta:(net*(SCALE/BigInt(divisor))).toString()};});
- if(sum!==0n||total(l)!==0n)throw Error('칩/정산 합계 불일치 — 반영 보류');
- for(const p of changes){const row=l.rows[p.pid]||(l.rows[p.pid]={pid:p.pid,name:p.name,units:'0',games:0});row.units=(integer(row.units)+integer(p.delta)).toString();row.games++;}
- l.games[gameId]=true;l.version++;l.history.push({kind:'game',id:gameId,divisor,players:changes,at:Date.now()});return true;
+ const changes=players.map(p=>{const buyin=integer(p.buyin),cash=integer(p.cash);if(buyin<0n||cash<0n)throw Error('음수 칩');const net=cash-buyin;if(p.count!==undefined&&(!Number.isSafeInteger(p.count)||p.count<0))throw Error('바이인 횟수 오류');return {pid:p.pid,name:p.name,...(p.count===undefined?{}:{count:p.count}),buyin:String(buyin),cash:String(cash),net:String(net),delta:String(net*(SCALE/BigInt(divisor)))};});
+ return settleDeltas(l,gameId,changes,{divisor});
 }
-function preview(l){
- if(total(l)!==0n)throw Error('누적정산 합계 불일치');
- const rows=Object.values(l.rows).map(r=>{const n=integer(r.units),base=floorDiv(n,BLOCK)*BLOCK;return {pid:r.pid,name:r.name,before:r.units,base:base.toString(),remainder:(n-base).toString()};});
- const pot=rows.reduce((s,r)=>s+integer(r.remainder),0n);if(pot%BLOCK)throw Error('팟 단위 오류');
- return {version:l.version,rows,pot:pot.toString(),participants:rows.filter(r=>integer(r.remainder)>0n).map(r=>r.pid)};
+function confirm(l,{version,pid,actor,requestId}){
+ if(typeof requestId!=='string'||! /^[a-zA-Z0-9_-]{8,80}$/.test(requestId))throw Error('정산 요청 ID 오류');
+ const prior=l.confirmed.find(x=>x.requestId===requestId);if(prior){if(prior.pid!==pid||prior.actor!==actor)throw Error('요청 ID 충돌');return prior;}
+ if(version!==l.version)throw Error('정산 금액이 변경되었습니다. 다시 확인해주세요.');
+ if(l.calculation.warning)throw Error(l.calculation.warning);
+ const r=l.rows[pid],proposal=l.calculation.rows.find(x=>x.pid===pid);if(!r||!proposal||r.open===false)throw Error('미확정 참가자를 확인해주세요.');
+ const record={id:requestId,requestId,pid,name:r.name,actor,raw:proposal.raw,lifetimeRaw:r.units,amount:proposal.amount,difference:String(integer(proposal.amount)-integer(proposal.raw)),at:Date.now(),segment:r.segment,games:[...(r.segmentGames||[])]};
+ r.closedRaw=r.units;r.open=false;r.segmentGames=[];l.confirmed.push(record);l.version++;recompute(l);return record;
 }
-function begin(l,version,online){
- if(l.pot&&l.pot.phase!=='complete')throw Error('이미 진행 중입니다.');if(version!==l.version)throw Error('정산이 변경되었습니다. 다시 확인해주세요.');
- const p=preview(l);if(!p.participants.every(pid=>online.includes(pid)))throw Error('참가 대상 전원 접속 후 진행해주세요.');
- if(p.pot==='0')return {phase:'complete',empty:true};
- l.pot={...p,id:id(),phase:'ready',round:0,contenders:[...p.participants],rounds:[]};return l.pot;
-}
-function round(l,deck,evaluate,compare,online){
- const p=l.pot;if(!p||!['ready','tie','paused'].includes(p.phase))throw Error('재경기 상태 오류');
- if(!p.participants.every(pid=>online.includes(pid))){p.phase='paused';return p;}
- if(new Set(deck).size!==52||deck.length!==52||deck.some(c=>! /^[2-9TJQKA][SHDC]$/.test(c)))throw Error('덱 오류');
- if(p.contenders.length>23)throw Error('단일 덱 참가 인원 초과');
- const cards=deck.slice();const players=p.contenders.map(pid=>({pid,cards:[cards.pop(),cards.pop()]}));const board=cards.splice(-5);let top=null;
- for(const row of players){row.score=evaluate([...row.cards,...board]);if(!top||compare(row.score,top)>0)top=row.score;}
- const winners=players.filter(r=>compare(r.score,top)===0).map(r=>r.pid);if(!winners.length)throw Error('승자 계산 실패');
- p.round++;p.rounds.push({number:p.round,board,players:players.map(r=>({...r,win:winners.includes(r.pid)})),winners,at:Date.now()});p.contenders=winners;
- if(winners.length>1){p.phase='tie';return p;}
- // Commit exactly once, only after a unique winner is known. Original rows stay intact until then.
- if(p.version!==l.version)throw Error('정산 원장이 변경되었습니다.');
- for(const row of p.rows)l.rows[row.pid].units=(integer(row.base)+(row.pid===winners[0]?integer(p.pot):0n)).toString();
- if(total(l)!==0n)throw Error('정산 합계 오류');p.phase='complete';p.winner=winners[0];l.version++;l.history.push({kind:'pot',...JSON.parse(JSON.stringify(p)),at:Date.now()});return p;
-}
-module.exports={SCALE,BLOCK,integer,floorDiv,create,total,settle,preview,begin,round};
+module.exports={SCALE,BLOCK,integer,floorDiv,create,total,optimize,recompute,migrate,settle,settleDeltas,confirm};
