@@ -7,7 +7,7 @@ module.exports=function(E){
  function identify(p,credentials={}){p.pid=credentials.takeover?common.claim(credentials.identity,p.name):common.identify(credentials.identity,credentials.priorTokens,p.name);common.register(p.token,p.pid,p.name);publish();}
  function activeGames(){return [...E.rooms.values()].some(x=>is(x)&&x.startedAt&&!x.timed.session?.settled);}
  function persist(r,ledger=r.timed?.ledger||r.league?.automatic){if(is(r)){common.commit(ledger);publish();for(const room of E.rooms.values())if(is(room)&&room!==r)E.send(room);return;}fs.mkdirSync(store,{recursive:true});const data={mode:r.mode||'tournament',league:is(r)?null:r.league,code:r.code,roomName:r.roomName,hostPid:r.hostPid,settings:r.settings,ledger,players:r.players.map(p=>({pid:p.pid,token:p.token,name:p.name,timedSeat:p.timedSeat}))};const file=path.join(store,r.code+'.json');fs.writeFileSync(file+'.tmp',JSON.stringify(data));fs.renameSync(file+'.tmp',file);}
- function restore(){common.load();if(!fs.existsSync(store))return;for(const file of fs.readdirSync(store)){if(!/^[A-F0-9]{6}\.json$/.test(file))continue;try{const d=JSON.parse(fs.readFileSync(path.join(store,file),'utf8'));L.migrate(d.ledger);if(L.total(d.ledger)!==0n)throw Error('원장 합계 오류');const r={code:d.code,roomName:d.roomName,hostPid:d.mode==='tournament'?d.hostPid:common.canonical(d.hostPid),mode:d.mode||'timed',settings:{...d.settings,...(d.mode==='tournament'?{}:{buyin:20000})},players:d.players.map(p=>({...p,pid:d.mode==='tournament'?p.pid:common.canonical(p.pid),socketId:null,spectator:true,departed:false,stack:0,bank:0,bet:0,contrib:0,cards:[],inHand:false,fold:false,lastActivityAt:Date.now()})),button:-1,sbIndex:-1,bbIndex:-1,street:'waiting',board:[],turn:-1,highest:0,minRaise:2000,handSB:1000,handBB:2000,startedAt:null,endsAt:null,log:['누적정산 원장 복원 · 착석 후 새 게임을 시작해주세요.'],showdown:null,showdownReveal:[],gameOver:false,sessionSeatOrder:[],timed:{ledger:common.ledger,session:null,stage:0,error:null}};if(d.mode==='tournament'){r.league=d.league;delete r.timed;if(r.league)r.league.automatic=d.ledger;}if(d.mode==='timed'&&d.recovery?.session){const g=d.recovery.session;if(!common.ledger.games[g.id]){r.timed.session=g;r.timed.stage=1;r.startedAt=d.recovery.at;r.timed.error='서버 재시작 후 보류 경기 원본 복원 · 정산 재확인 필요';for(const p of r.players){const saved=d.recovery.players.find(x=>x.pid===p.pid);if(saved)p.stack=saved.stack;}}}E.rooms.set(r.code,r);}catch(e){console.error('[TIMED LEDGER RESTORE]',file,e.message);}}}
+ function restore(){common.load();if(!fs.existsSync(store))return;for(const file of fs.readdirSync(store)){if(!/^[A-F0-9]{6}\.json$/.test(file))continue;try{const d=JSON.parse(fs.readFileSync(path.join(store,file),'utf8'));L.migrate(d.ledger);if(L.total(d.ledger)!==0n)throw Error('원장 합계 오류');const r={code:d.code,roomName:d.roomName,hostPid:d.mode==='tournament'?d.hostPid:common.canonical(d.hostPid),mode:d.mode||'timed',settings:{...d.settings,...(d.mode==='tournament'?{}:{buyin:20000})},players:d.players.map(p=>({...p,pid:d.mode==='tournament'?p.pid:common.canonical(p.pid),socketId:null,spectator:true,departed:false,stack:0,bank:0,bet:0,contrib:0,cards:[],inHand:false,fold:false,lastActivityAt:Date.now()})),button:-1,sbIndex:-1,bbIndex:-1,street:'waiting',board:[],turn:-1,highest:0,minRaise:2000,handSB:1000,handBB:2000,startedAt:null,endsAt:null,log:['누적정산 원장 복원 · 착석 후 새 게임을 시작해주세요.'],showdown:null,showdownReveal:[],gameOver:false,sessionSeatOrder:[],timed:{ledger:common.ledger,session:null,stage:0,error:null}};if(d.mode==='tournament'){r.league=d.league;delete r.timed;if(r.league)r.league.automatic=d.ledger;}if(d.mode==='timed'&&d.recovery?.session){const g=d.recovery.session;if(!common.ledger.games[g.id]){r.timed.session=g;r.timed.stage=1;r.startedAt=d.recovery.at;r.timed.error='서버 재시작 후 보류 경기 원본 복원 · 정산 재확인 필요';for(const p of r.players){const saved=d.recovery.players.find(x=>common.canonical(x.pid)===p.pid);if(saved)p.stack=saved.stack;}}}E.rooms.set(r.code,r);}catch(e){console.error('[TIMED LEDGER RESTORE]',file,e.message);}}}
  const is=r=>r?.mode==='timed',live=r=>['preflop','flop','turn','river','runout'].includes(r.street);
  function init(r){r.mode='timed';r.settings={minutes:30,buyin:20000,divisor:4,blindMinutes:0,maxBet:0,turnSeconds:17};r.timed={ledger:common.ledger,session:null,stage:0,error:null};}
  // Initial entry is 20,000. Refill selection is server-owned and applied only at hand boundaries.
@@ -30,16 +30,34 @@ module.exports=function(E){
   return {ok:true,amount:selected(p)};
  }
  function after(r){if(!is(r))return;const g=r.timed.session;if(!g)return;for(const p of r.players){if(g.rows[p.pid])g.rows[p.pid].cash=p.stack;queueAuto(r,p);if(g.rows[p.pid]&&p.departed){p.spectator=true;p.inHand=false;}}}
+ function finalRows(r){
+  const rows=Object.values(r.timed.session.rows),used=new Set();
+  const result=rows.map(row=>{
+   const matches=r.players.filter(p=>common.canonical(p.pid)===common.canonical(row.pid));
+   if(matches.length!==1||used.has(matches[0]?.pid))throw Error('정산 참가자 식별 불일치 — 원본 보존 후 확인 필요');
+   const p=matches[0];used.add(p.pid);
+   if(!Number.isSafeInteger(p.stack)||p.stack<0)throw Error('최종 보유 칩 오류');
+   return {...row,pid:common.canonical(row.pid),cash:p.stack};
+  });
+  if(r.players.some(p=>p.stack>0&&!used.has(p.pid)))throw Error('바이인 원본 없는 보유 칩 — 반영 보류');
+  return result;
+ }
  function evidence(r){
   const g=r.timed.session;
   const record={schema:1,code:r.code,roomName:r.roomName,hostPid:r.hostPid,settings:r.settings,mode:'timed',ledger:common.ledger,
    players:r.players.map(p=>({pid:p.pid,token:p.token,name:p.name,timedSeat:p.timedSeat})),
-   recovery:{at:Date.now(),handId:r.handId,street:r.street,settlementComplete:r.settlementComplete,session:structuredClone(g),
+   recovery:{audit:r.timed.audit||null,at:Date.now(),handId:r.handId,street:r.street,settlementComplete:r.settlementComplete,session:structuredClone(g),
     players:r.players.map(p=>({pid:p.pid,stack:p.stack,contrib:p.contrib,bet:p.bet,inHand:p.inHand,departed:p.departed}))}};
   fs.mkdirSync(store,{recursive:true});const audit=path.join(store,'settlement-evidence');fs.mkdirSync(audit,{recursive:true});fs.writeFileSync(path.join(audit,g.id+'-'+crypto.randomBytes(8).toString('hex')+'.json'),JSON.stringify(record),{flag:'wx'});const file=path.join(store,r.code+'.json');fs.writeFileSync(file+'.tmp',JSON.stringify(record));fs.renameSync(file+'.tmp',file);
  }
- function finish(r){const t=r.timed,g=t.session;if(!g||g.settled||live(r))return;for(const p of r.players){cancelPending(r,p);if(g.rows[p.pid])g.rows[p.pid].cash=p.stack;}
-  try{evidence(r);const next=structuredClone(common.ledger);L.settle(next,g.id,Object.values(g.rows),r.settings.divisor);if(r.code)persist(r,next);t.ledger=next;t.error=null;}catch(e){t.error=e.message;E.send(r);return;}
+ function finish(r){const t=r.timed,g=t.session;if(!g||g.settled||live(r))return;for(const p of r.players)cancelPending(r,p);
+  try{
+   t.audit={gameId:g.id,at:Date.now(),ledgerUnits:String(L.total(common.ledger)),sessionRows:structuredClone(g.rows),players:r.players.map(p=>({pid:p.pid,canonical:common.canonical(p.pid),stack:p.stack,bank:p.bank,departed:!!p.departed,spectator:!!p.spectator}))};
+   evidence(r);const rows=finalRows(r);
+   t.audit.finalRows=rows;t.audit.buyin=rows.reduce((n,x)=>n+BigInt(x.buyin),0n).toString();t.audit.cash=rows.reduce((n,x)=>n+BigInt(x.cash),0n).toString();evidence(r);
+   if(t.audit.ledgerUnits!=='0')throw Error('기존 누적 원본 합계 불일치 — 반영 보류');
+   if(t.audit.buyin!==t.audit.cash)throw Error('칩 합계 불일치: 바이인 '+t.audit.buyin+' / 최종 '+t.audit.cash+' — 반영 보류');
+   const next=structuredClone(common.ledger);L.settle(next,g.id,rows,r.settings.divisor);if(r.code)persist(r,next);t.ledger=next;t.error=null;}catch(e){t.error=e.message;E.send(r);return;}
   g.settled=true;t.intro=null;r.startedAt=null;r.endsAt=null;r.turn=-1;r.turnDeadline=null;r.nextHandAt=null;E.cancelRoomTimer(r.nextHandTimer);r.nextHandTimer=null;r.street='waiting';E.send(r);E.emitLobby();}
  function before(r){const t=r.timed;if(!r.startedAt||t.error)return false;if(t.stage===1&&!t.intro){finish(r);return false;}
   if(!r.players.some(p=>!p.departed&&!p.spectator)){finish(r);return false;}
