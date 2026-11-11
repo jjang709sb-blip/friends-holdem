@@ -27,8 +27,14 @@ module.exports=function(directory){
   if(changed){next.ledger.version++;L.recompute(next.ledger);}
   next.accounts[identity]={pid,name};write(next);return pid;
  }
+ function claim(identity,name){
+  if(!key(identity))throw Error('접속 정보 오류');const next=copy(load());
+  const ids=new Set([...Object.values(next.accounts),...Object.values(next.ledger.rows)].filter(x=>x.name===name).map(x=>canonical(x.pid,next)));
+  if(ids.size!==1)throw Error('동일 닉네임 기록이 여러 개입니다. 원장 확인이 필요합니다.');
+  const pid=[...ids][0];next.accounts[identity]={pid,name};write(next);return pid;
+ }
  function register(token,pid,name){const next=copy(load());next.aliases[token]={pid,name};write(next);}
  function commit(ledger){if(L.total(ledger)!==0n)throw Error('공통 정산 합계 오류');const next=copy(load());next.ledger=ledger;write(next);}
  function reset({version,requestId,actor}){const d=load();if(!key(requestId))throw Error('초기화 요청 오류');if(d.resets[requestId])return;if(version!==d.ledger.version)throw Error('정산 내용이 변경되었습니다. 다시 확인해주세요.');const next=copy(d);next.archives.push({at:Date.now(),actor,epoch:d.epoch,ledger:copy(d.ledger)});next.epoch++;next.ledger=L.create();next.ledger.version=d.ledger.version+1;L.recompute(next.ledger);next.resets[requestId]={actor,at:Date.now()};write(next);}
- return {load,identify,register,canonical,commit,reset,get ledger(){return load().ledger;},get epoch(){return load().epoch;}};
+ return {load,claim,identify,register,canonical,commit,reset,get ledger(){return load().ledger;},get epoch(){return load().epoch;}};
 };
