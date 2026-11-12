@@ -82,16 +82,18 @@ module.exports=function(E){
    // Explicit leavers remain observers; temporary disconnects retain their exact seat/hand.
    if(p.departed&&!p.inHand){p.spectator=true;p.leaveAfterHand=false;p.departed=false;}
    if(!r.hostPid)r.hostPid=p.pid;E.touchActivity(p);E.bindSocket(r,p,s);
+   if(!r.startedAt&&p.spectator&&!p.inHand&&freeSeat(r)>=0)seat(r,p);
    ack({code:r.code,pid:p.pid,token:p.token,resumed:true,spectator:!!p.spectator});E.send(r);return;
   }
-  E.addPlayer(r,name,s,ack,true);
+  E.addPlayer(r,name,s,result=>{if(!result.error&&!r.startedAt){const joined=r.players.find(x=>x.pid===result.pid);if(joined&&freeSeat(r)>=0){seat(r,joined);result.spectator=false;}}ack(result);},true);
  }
  function start(r,p){if(p.pid!==r.hostPid||r.startedAt)throw Error('방장만 시작할 수 있습니다.');
   const ps=r.players.filter(x=>!x.spectator&&!x.departed&&x.socketId);if(ps.length<2)throw Error('착석한 참가자 2명 이상 필요합니다.');
   r.timed.session={id:crypto.randomBytes(12).toString('hex'),rows:{},settled:false};r.timed.stage=0;r.timed.intro=null;r.timed.error=null;r.startedAt=Date.now();r.endsAt=r.startedAt+r.settings.minutes*60000;r.street='waiting';r.gameOver=false;r.resultEndsAt=null;r.showdown=null;r.sessionRoster=null;r.button=-1;
   for(const x of r.players){x.stack=0;x.bank=0;x.bet=0;x.contrib=0;x.inHand=false;x.cards=[];x.finalRank=null;if(ps.includes(x))buy(r,x);}
   r.sessionSeatOrder=ps.map(x=>x.pid);E.deal(r);E.emitLobby();}
- function seat(r,p,i){if(r.timed.stage===1&&r.startedAt)throw Error('막1 착석/바이인 마감');if(!p.spectator||(p.inHand&&live(r)))throw Error('이미 착석했거나 정산 중입니다.');if(!Number.isInteger(i)||i<0||i>8)throw Error('좌석 오류');
+ function freeSeat(r){return Array.from({length:9},(_,i)=>i).find(i=>!r.players.some(x=>x.timedSeat===i&&((!x.departed&&!x.spectator)||(x.inHand&&live(r)))))??-1;}
+ function seat(r,p,i){if(r.timed.stage===1&&r.startedAt)throw Error('막1 착석/바이인 마감');if(!p.spectator||(p.inHand&&live(r)))throw Error('이미 착석했거나 정산 중입니다.');if(i===undefined)i=freeSeat(r);if(i===-1)throw Error('빈 좌석이 없습니다.');if(!Number.isInteger(i)||i<0||i>8)throw Error('좌석 오류');
   const occupied=r.players.find(x=>x.timedSeat===i&&((!x.departed&&!x.spectator)||(x.inHand&&live(r))));if(occupied)throw Error('이미 사용 중인 좌석입니다.');
   // Keep the engine's array indices stable during a hand; order is established at the next hand boundary.
   p.timedSeat=i;p.spectator=false;p.departed=false;p.leaveAfterHand=false;p.inHand=false;if(r.startedAt){if(p.stack===0)buy(r,p);else{const row=r.timed.session.rows[p.pid];if(!row)throw Error('바이인 기록 오류');}}
