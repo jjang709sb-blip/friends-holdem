@@ -1,6 +1,7 @@
 'use strict';
 const crypto=require('crypto'),L=require('./timed-ledger'),fs=require('fs'),path=require('path');
 module.exports=function(E){
+ const M=require('./timed-merge');
  const store=process.env.TIMED_LEDGER_DIR||path.resolve('data/timed-ledgers');
  const common=require('./timed-common')(store);
  function publish(){for(const room of E.rooms.values())if(is(room))room.timed.ledger=common.ledger;}
@@ -68,7 +69,7 @@ module.exports=function(E){
   for(const p of r.players)if(!p.departed&&!p.spectator&&p.socketId)applyPending(r,p);
   if(t.intro){t.stage=t.intro.stage;t.intro=null;}return true;}
  function schedule(r,delay){E.cancelRoomTimer(r.nextHandTimer);r.nextHandTimer=null;if(!r.startedAt)return;r.nextHandAt=Date.now()+delay;r.nextHandTimer=setTimeout(()=>{r.nextHandTimer=null;r.nextHandAt=null;E.deal(r);},delay);E.send(r);}
- function publicState(r){if(!is(r))return null;const t=r.timed;return {buyinSelections:Object.fromEntries(r.players.map(p=>[p.pid,selected(p)])),stage:t.stage,intro:t.intro||null,commonEpoch:common.epoch,session:t.session?{id:t.session.id,rows:t.session.rows,settled:t.session.settled}:null,ledger:t.ledger,error:t.error,seats:r.players.map((p,i)=>({i,pid:p.pid,name:p.name,free:!!p.departed&&!p.inHand})).filter(x=>x.i<9)};}
+ function publicState(r){if(!is(r))return null;const t=r.timed;return {buyinSelections:Object.fromEntries(r.players.map(p=>[p.pid,selected(p)])),stage:t.stage,intro:t.intro||null,commonEpoch:common.epoch,session:t.session?{id:t.session.id,rows:t.session.rows,settled:t.session.settled}:null,ledger:{...t.ledger,mergeAudit:(t.ledger.mergeAudit||[]).map(({snapshot,...entry})=>entry)},error:t.error,seats:r.players.map((p,i)=>({i,pid:p.pid,name:p.name,free:!!p.departed&&!p.inHand})).filter(x=>x.i<9)};}
  function detach(r,p,s){cancelPending(r,p);p.socketId=null;p.departed=true;p.leaveAfterHand=true;s.leave(r.code);s.data.roomCode=null;s.data.pid=null;if(!live(r)||!p.inHand){p.spectator=true;p.inHand=false;}if(r.hostPid===p.pid)E.transferHost(r);if(r.startedAt&&!live(r)&&!r.players.some(x=>!x.departed&&!x.spectator))schedule(r,0);E.emitLobby();}
  function join(r,name,token,s,ack,credentials={}){
   let p=r.players.find(x=>x.name===name),pid;
@@ -107,6 +108,11 @@ module.exports=function(E){
   else if(d.type==='seat')seat(r,p,d.seat);
   else if(d.type==='start')start(r,p);
   else if(d.type==='settlement-retry'){if(p.pid!==r.hostPid||!t.error||live(r))throw Error('정산 재확인 대상이 아닙니다.');finish(r);if(t.error)throw Error(t.error);}
+  else if(d.type==='ledger-merge'||d.type==='ledger-merge-preview'||d.type==='ledger-merge-undo'){
+   if(p.pid!==r.hostPid)throw Error('방장만 정산 기록을 합칠 수 있습니다.');if(activeGames())throw Error('모든 타임제 경기를 마친 뒤 합쳐주세요.');
+   if(d.type==='ledger-merge-preview'){if(d.version!==t.ledger.version)throw Error('정산 내용이 변경되었습니다.');const next=structuredClone(t.ledger);const info=M.preview(next,d.from,d.to);M.merge(next,{...d,actor:p.pid});return ack({ok:true,info,calculation:next.calculation});}
+   const next=structuredClone(t.ledger);const changed=d.type==='ledger-merge'?M.merge(next,{...d,actor:p.pid}):M.undo(next,{...d,actor:p.pid});if(changed)persist(r,next);
+  }
   else if(d.type==='ledger-reset'){if(p.pid!==r.hostPid)throw Error('방장만 초기화할 수 있습니다.');if(activeGames())throw Error('모든 타임제 경기를 마친 뒤 초기화해주세요.');common.reset({version:d.version,requestId:d.requestId,actor:p.pid});publish();for(const room of E.rooms.values())if(is(room))E.send(room);}
   else if(d.type==='settlement-complete'){if(r.startedAt||p.pid!==r.hostPid)throw Error('경기 종료 후 방장만 실제 정산 완료를 기록할 수 있습니다.');const next=structuredClone(common.ledger);L.confirm(next,{version:d.version,pid:d.pid,actor:p.pid,requestId:d.requestId});persist(r,next);t.ledger=next;}
   else throw Error('잘못된 요청');E.send(r);ack({ok:true});

@@ -46,7 +46,8 @@ function settleDeltas(l,gameId,changes,meta={}){
  if(l.games[gameId])return false;
  if(total(l)!==0n||changes.reduce((n,x)=>n+integer(x.delta),0n)!==0n)throw Error('칩/원본 합계 불일치 — 반영 보류');
  if(new Set(changes.map(x=>x.pid)).size!==changes.length)throw Error('중복 참가자');
- for(const p of changes){let r=l.rows[p.pid];if(!r)r=l.rows[p.pid]={pid:p.pid,name:p.name,units:'0',closedRaw:'0',games:0,open:true,segment:1,segmentGames:[]};
+ const grouped=new Map();for(const p of changes){let pid=p.pid;const seen=new Set();while(l.mergeAliases?.[pid]){if(seen.has(pid))throw Error('정산 연결 순환 오류');seen.add(pid);pid=l.mergeAliases[pid];}const old=grouped.get(pid);if(old)old.delta=String(integer(old.delta)+integer(p.delta));else grouped.set(pid,{...p,pid});}
+ for(const p of grouped.values()){let r=l.rows[p.pid];if(!r)r=l.rows[p.pid]={pid:p.pid,name:l.mergeNames?.[p.pid]||p.name,units:'0',closedRaw:'0',games:0,open:true,segment:1,segmentGames:[]};
   if(r.open===false){r.open=true;r.segment++;r.segmentGames=[];}
   r.units=(integer(r.units)+integer(p.delta)).toString();r.games++;(r.segmentGames||(r.segmentGames=[])).push(gameId);
  }

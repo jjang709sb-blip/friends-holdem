@@ -35,6 +35,6 @@ module.exports=function(directory){
  }
  function register(token,pid,name){const next=copy(load());next.aliases[token]={pid,name};write(next);}
  function commit(ledger){if(L.total(ledger)!==0n)throw Error('공통 정산 합계 오류');const next=copy(load());next.ledger=ledger;write(next);}
- function reset({version,requestId,actor}){const d=load();if(!key(requestId))throw Error('초기화 요청 오류');if(d.resets[requestId])return;if(version!==d.ledger.version)throw Error('정산 내용이 변경되었습니다. 다시 확인해주세요.');const next=copy(d);next.archives.push({at:Date.now(),actor,epoch:d.epoch,ledger:copy(d.ledger)});next.epoch++;next.ledger=L.create();next.ledger.version=d.ledger.version+1;L.recompute(next.ledger);next.resets[requestId]={actor,at:Date.now()};write(next);}
+ function reset({version,requestId,actor}){const d=load();if(!key(requestId))throw Error('초기화 요청 오류');if(d.resets[requestId])return;if(version!==d.ledger.version)throw Error('정산 내용이 변경되었습니다. 다시 확인해주세요.');const next=copy(d);next.archives.push({at:Date.now(),actor,epoch:d.epoch,ledger:copy(d.ledger)});next.epoch++;next.ledger=L.create();next.ledger.mergeAliases=copy(d.ledger.mergeAliases||{});next.ledger.mergeNames=copy(d.ledger.mergeNames||{});next.ledger.version=d.ledger.version+1;L.recompute(next.ledger);next.resets[requestId]={actor,at:Date.now()};write(next);}
  return {load,claim,identify,register,canonical,commit,reset,get ledger(){return load().ledger;},get epoch(){return load().epoch;}};
 };
