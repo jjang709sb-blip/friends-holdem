@@ -141,7 +141,7 @@ function finish(r){
  if(winnerPlayers.length)note(r,`🏆 ${winnerPlayers.map(p=>p.name).join(', ')} 승리 · ${winnerPlayers.map(p=>handName(scores.get(p.pid))).join('/')}`);
  r.settlementComplete=true;if(timed.is(r))timed.after(r);applySelectedRebuys(r);
  eliminatePlayers(r,r.players.filter(p=>!p.spectator&&p.stack+p.bank===0));
- r.settlementComplete=true;r.players.forEach(p=>{if(p.inHand&&p.stack===0&&p.bank>0){p.rebuyEligible=true;p.rebuyHandId=r.handId;p.rebuyDeadline=null}});r.street='done';r.turn=-1;r.turnDeadline=null;r.highest=0;purgeLeavers(r);send(r);scheduleNext(r,Math.max(1000,r.resultEndsAt-roomNow(r)+400))
+ r.settlementComplete=true;r.players.forEach(p=>{if(p.inHand&&p.stack===0&&p.bank>0){p.rebuyEligible=true;p.rebuyHandId=r.handId;p.rebuyDeadline=null}});r.street='done';r.turn=-1;r.turnDeadline=null;r.highest=0;purgeLeavers(r);send(r);scheduleNext(r,Math.max(1000,r.resultEndsAt-roomNow(r)+1400))
 }
 // Server-owned presentation milestones. Acknowledgements never advance the clock.
 function presentationPlan(r,base,runout){
@@ -160,7 +160,10 @@ function presentationPlan(r,base,runout){
  }
  t.riverCompleteAt=base>=5?start+2600:t.riverRevealAt+(cinematic?1550:500);
  t.resultRevealAt=Math.max(start+2600,t.riverCompleteAt+(cinematic?600:450));
- t.sweepAt=t.resultRevealAt+2000;t.collectAt=t.resultRevealAt+2800;t.settleAt=t.resultRevealAt+4200;t.presentationCompleteAt=t.resultRevealAt+4700;
+ // Preserve the old server settlement/payload instant; extend presentation only.
+ t.settlementPayloadAt=t.resultRevealAt-900;
+ if(runout&&base<5){t.riverPoppin=true;t.riverPeekAt=t.riverRevealAt+720;t.riverPauseEndAt=t.riverRevealAt+1050;t.riverFaceAt=t.riverRevealAt+2300;t.riverFlyAt=t.riverRevealAt+2530;t.riverLandAt=t.riverRevealAt+2900;t.riverCompleteAt=t.riverRevealAt+3000;t.resultRevealAt=t.riverCompleteAt+450;}
+ t.sweepAt=t.resultRevealAt+2000;t.collectAt=t.resultRevealAt+2800;t.settleAt=t.resultRevealAt+4700;t.presentationCompleteAt=t.resultRevealAt+5200;
  return t;
 }
 function atMilestone(r,at,label,fn){
@@ -176,7 +179,7 @@ function slowRunout(r){
  for(const [count,at,label] of [[3,t.flopRevealAt,'flop'],[4,t.turnRevealAt,'turn'],[5,t.riverRevealAt,'river']])if(base<count){
   atMilestone(r,at-900,label+'-payload',()=>{r.board=r.runoutBoard.slice(0,count)});
  }
- atMilestone(r,t.resultRevealAt-900,'settlement-payload',()=>{r.runout=false;finish(r)});
+ atMilestone(r,t.settlementPayloadAt,'settlement-payload',()=>{r.runout=false;finish(r)});
 }
 
 function advance(r){if(active(r).length<=1){finish(r);return}if(eligible(r).length===0||(eligible(r).length===1&&eligible(r)[0].bet>=r.highest)){slowRunout(r);return}let pending=r.players.some(p=>canAct(r,p)&&(!p.acted||p.bet<r.highest));if(pending){r.turn=next(r,r.turn,p=>canAct(r,p)&&(!p.acted||p.bet<r.highest));setTurnDeadline(r);send(r);return}if(r.street==='river'){finish(r);return}r.street={preflop:'flop',flop:'turn',turn:'river'}[r.street];let count=r.street==='flop'?3:1;for(let k=0;k<count;k++)r.board.push(r.deck.pop());r.players.forEach(p=>{p.bet=0;p.acted=false;p.lastMove=null});r.highest=0;r.minRaise=handBlinds(r)[1];r.turn=next(r,r.button,p=>canAct(r,p));setTurnDeadline(r);note(r,`${r.street.toUpperCase()} ${r.board.join(' ')}`);send(r)}
