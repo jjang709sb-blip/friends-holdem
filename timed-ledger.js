@@ -1,10 +1,10 @@
 'use strict';
-// Monetary source values are exact integer twelfths of a won. Suggested payments never modify them.
-const SCALE=12n,BLOCK=120000n,HALF=60000n;
+// Monetary source values are exact integer sixtieths of a won. Suggested payments never modify them.
+const SCALE=60n,BLOCK=600000n,HALF=300000n;
 const integer=v=>{if(typeof v==='bigint')return v;if(typeof v==='number'&&Number.isSafeInteger(v))return BigInt(v);if(typeof v==='string'&&/^-?\d+$/.test(v))return BigInt(v);throw Error('정수 금액 오류');};
 const floorDiv=(n,d)=>n/d-(n<0n&&n%d?1n:0n),abs=n=>n<0n?-n:n;
 const total=l=>Object.values(l.rows).reduce((n,r)=>n+integer(r.units),0n);
-function create(){return {schema:2,version:0,rows:{},games:{},history:[],confirmed:[],calculation:{rows:[],fixed:'0',sum:'0',warning:null},calculationCount:0};}
+function create(){return {schema:3,version:0,rows:{},games:{},history:[],confirmed:[],calculation:{rows:[],fixed:'0',sum:'0',warning:null},calculationCount:0};}
 function compare(a,b){for(let i=0;i<4;i++)if(a[i]!==b[i])return a[i]<b[i]?-1:1;return 0;}
 // For a fixed number of rounded-up rows, lexicographic additive costs dominate.
 // The fourth component is a monotone max; replacing a prefix by a smaller max cannot worsen its suffix.
@@ -36,11 +36,22 @@ function recompute(l){
  l.calculation={...result,fixed:fixed.toString(),sum:'0',warning,version:l.version};l.calculationCount=(l.calculationCount||0)+1;return l.calculation;
 }
 function migrate(l){
- if(l.schema===2)return l;
+ if(l.schema===3)return l;
+ if(l.schema!==2){
  l.legacy={pot:l.pot||null,history:(l.history||[]).filter(x=>x.kind==='pot')};delete l.pot;
  l.history=(l.history||[]).filter(x=>x.kind!=='pot');l.confirmed=[];l.schema=2;
  for(const r of Object.values(l.rows)){r.closedRaw='0';r.open=true;r.segmentGames=[];r.segment=1;}
- l.migrationNote='이전 원장 잔액을 변경하지 않고 이월했습니다. 과거 정산 기록은 별도 보관됩니다.';recompute(l);return l;
+ l.migrationNote='이전 원장 잔액을 변경하지 않고 이월했습니다. 과거 정산 기록은 별도 보관됩니다.';
+ }
+ // Convert money only. Chip buyins, cash, net and counts must never be scaled.
+ const money=(o,keys)=>{for(const key of keys)if(o[key]!==undefined)o[key]=String(integer(o[key])*5n);};
+ const rows=rs=>{for(const r of Object.values(rs||{}))money(r,['units','closedRaw']);};
+ rows(l.rows);
+ for(const g of l.history||[])for(const p of g.players||[])money(p,['delta']);
+ for(const c of l.confirmed||[])money(c,['raw','lifetimeRaw','amount','difference']);
+ for(const a of l.mergeAudit||[]){money(a,['raw','lifetime']);if(a.snapshot)rows(a.snapshot.rows);}
+ l.schema=3;l.version++;l.monetaryMigration={fromScale:12,toScale:60,at:Date.now()};
+ recompute(l);return l;
 }
 function settleDeltas(l,gameId,changes,meta={}){
  if(l.games[gameId])return false;
@@ -54,7 +65,7 @@ function settleDeltas(l,gameId,changes,meta={}){
  l.games[gameId]=true;l.version++;l.history.push({kind:'game',id:gameId,...meta,players:changes,at:Date.now()});recompute(l);return true;
 }
 function settle(l,gameId,players,divisor){
- if(![3,4].includes(divisor))throw Error('정산 비율 오류');
+ if(![3,4,5,6].includes(divisor))throw Error('정산 비율 오류');
  const changes=players.map(p=>{const buyin=integer(p.buyin),cash=integer(p.cash);if(buyin<0n||cash<0n)throw Error('음수 칩');const net=cash-buyin;if(p.count!==undefined&&(!Number.isSafeInteger(p.count)||p.count<0))throw Error('바이인 횟수 오류');return {pid:p.pid,name:p.name,...(p.count===undefined?{}:{count:p.count}),buyin:String(buyin),cash:String(cash),net:String(net),delta:String(net*(SCALE/BigInt(divisor)))};});
  return settleDeltas(l,gameId,changes,{divisor});
 }

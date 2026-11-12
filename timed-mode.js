@@ -10,7 +10,7 @@ module.exports=function(E){
  function persist(r,ledger=r.timed?.ledger||r.league?.automatic){if(is(r)){common.commit(ledger);publish();for(const room of E.rooms.values())if(is(room)&&room!==r)E.send(room);return;}fs.mkdirSync(store,{recursive:true});const data={mode:r.mode||'tournament',league:is(r)?null:r.league,code:r.code,roomName:r.roomName,hostPid:r.hostPid,settings:r.settings,ledger,players:r.players.map(p=>({pid:p.pid,token:p.token,name:p.name,timedSeat:p.timedSeat}))};const file=path.join(store,r.code+'.json');fs.writeFileSync(file+'.tmp',JSON.stringify(data));fs.renameSync(file+'.tmp',file);}
  function restore(){common.load();if(!fs.existsSync(store))return;for(const file of fs.readdirSync(store)){if(!/^[A-F0-9]{6}\.json$/.test(file))continue;try{const d=JSON.parse(fs.readFileSync(path.join(store,file),'utf8'));L.migrate(d.ledger);if(L.total(d.ledger)!==0n)throw Error('원장 합계 오류');const r={code:d.code,roomName:d.roomName,hostPid:d.mode==='tournament'?d.hostPid:common.canonical(d.hostPid),mode:d.mode||'timed',settings:{...d.settings,...(d.mode==='tournament'?{}:{buyin:20000})},players:d.players.map(p=>({...p,pid:d.mode==='tournament'?p.pid:common.canonical(p.pid),socketId:null,spectator:true,departed:false,stack:0,bank:0,bet:0,contrib:0,cards:[],inHand:false,fold:false,lastActivityAt:Date.now()})),button:-1,sbIndex:-1,bbIndex:-1,street:'waiting',board:[],turn:-1,highest:0,minRaise:2000,handSB:1000,handBB:2000,startedAt:null,endsAt:null,log:['누적정산 원장 복원 · 착석 후 새 게임을 시작해주세요.'],showdown:null,showdownReveal:[],gameOver:false,sessionSeatOrder:[],timed:{ledger:common.ledger,session:null,stage:0,error:null}};if(d.mode==='tournament'){r.league=d.league;delete r.timed;if(r.league)r.league.automatic=d.ledger;}if(d.mode==='timed'&&d.recovery?.session){const g=d.recovery.session;if(!common.ledger.games[g.id]){r.timed.session=g;r.timed.stage=1;r.startedAt=d.recovery.at;r.timed.error='서버 재시작 후 보류 경기 원본 복원 · 정산 재확인 필요';for(const p of r.players){const saved=d.recovery.players.find(x=>common.canonical(x.pid)===p.pid);if(saved)p.stack=saved.stack;}}}E.rooms.set(r.code,r);}catch(e){console.error('[TIMED LEDGER RESTORE]',file,e.message);}}}
  const is=r=>r?.mode==='timed',live=r=>['preflop','flop','turn','river','runout'].includes(r.street);
- function init(r){r.mode='timed';r.settings={minutes:30,buyin:20000,divisor:4,blindMinutes:0,maxBet:0,turnSeconds:17};r.timed={ledger:common.ledger,session:null,stage:0,error:null};}
+ function init(r){r.mode='timed';r.settings={minutes:30,buyin:20000,divisor:6,blindMinutes:0,maxBet:0,turnSeconds:17};r.timed={ledger:common.ledger,session:null,stage:0,error:null};}
  // Initial entry is 20,000. Refill selection is server-owned and applied only at hand boundaries.
  function buy(r,p){const g=r.timed.session;if(!g||g.settled||r.timed.stage===1||p.spectator||p.departed||g.rows[p.pid])return false;
   g.rows[p.pid]={pid:p.pid,name:p.name,buyin:20000,count:1,cash:20000,pending:0};p.stack=20000;p.bank=0;return true;}
@@ -92,7 +92,10 @@ module.exports=function(E){
   const ps=r.players.filter(x=>!x.spectator&&!x.departed&&x.socketId);if(ps.length<2)throw Error('착석한 참가자 2명 이상 필요합니다.');
   r.timed.session={id:crypto.randomBytes(12).toString('hex'),rows:{},settled:false};r.timed.stage=0;r.timed.intro=null;r.timed.error=null;r.startedAt=Date.now();r.endsAt=r.startedAt+r.settings.minutes*60000;r.street='waiting';r.gameOver=false;r.resultEndsAt=null;r.showdown=null;r.sessionRoster=null;r.button=-1;
   for(const x of r.players){x.stack=0;x.bank=0;x.bet=0;x.contrib=0;x.inHand=false;x.cards=[];x.finalRank=null;if(ps.includes(x))buy(r,x);}
-  r.sessionSeatOrder=ps.map(x=>x.pid);E.deal(r);E.emitLobby();}
+  const seated=r.players.filter(x=>!x.spectator&&!x.departed);
+  for(let i=seated.length-1;i>0;i--){const j=crypto.randomInt(i+1);[seated[i],seated[j]]=[seated[j],seated[i]];}
+  seated.forEach((x,i)=>x.timedSeat=i);
+  r.sessionSeatOrder=seated.map(x=>x.pid);E.deal(r);E.emitLobby();}
  function freeSeat(r){return Array.from({length:9},(_,i)=>i).find(i=>!r.players.some(x=>x.timedSeat===i&&((!x.departed&&!x.spectator)||(x.inHand&&live(r)))))??-1;}
  function seat(r,p,i){if(r.timed.stage===1&&r.startedAt)throw Error('막1 착석/바이인 마감');if(!p.spectator||(p.inHand&&live(r)))throw Error('이미 착석했거나 정산 중입니다.');if(i===undefined)i=freeSeat(r);if(i===-1)throw Error('빈 좌석이 없습니다.');if(!Number.isInteger(i)||i<0||i>8)throw Error('좌석 오류');
   const occupied=r.players.find(x=>x.timedSeat===i&&((!x.departed&&!x.spectator)||(x.inHand&&live(r))));if(occupied)throw Error('이미 사용 중인 좌석입니다.');
@@ -103,18 +106,18 @@ module.exports=function(E){
  function reconnect(r,p){if(r.startedAt&&!live(r)){if(!r.nextHandTimer)schedule(r,Math.max(500,(r.resultEndsAt||0)-Date.now()+400));}}
  function handlers(s){s.on('timed:command',(d={},ack=()=>{})=>{const rp=E.roomPlayerForSocket(s);if(!rp||!is(rp.r))return ack({error:'타임제 방이 아닙니다.'});const {r,p}=rp,t=r.timed;try{
   E.touchActivity(p);
-  if(d.type==='settings'){if(r.startedAt||p.pid!==r.hostPid)throw Error('시작 전 방장만 설정 가능합니다.');if(![20,30,60].includes(d.minutes)||(d.buyin!==undefined&&d.buyin!==20000)||![3,4].includes(d.divisor))throw Error('설정 오류');Object.assign(r.settings,{minutes:d.minutes,buyin:20000,divisor:d.divisor});}
+  if(d.type==='settings'){if(r.startedAt||p.pid!==r.hostPid)throw Error('시작 전 방장만 설정 가능합니다.');if(![20,30,60].includes(d.minutes)||(d.buyin!==undefined&&d.buyin!==20000)||![3,4,5,6].includes(d.divisor))throw Error('설정 오류');Object.assign(r.settings,{minutes:d.minutes,buyin:20000,divisor:d.divisor});}
   else if(d.type==='buyin'){const result=manualBuy(r,p,d);E.send(r);return ack(result);}
   else if(d.type==='seat')seat(r,p,d.seat);
   else if(d.type==='start')start(r,p);
   else if(d.type==='settlement-retry'){if(p.pid!==r.hostPid||!t.error||live(r))throw Error('정산 재확인 대상이 아닙니다.');finish(r);if(t.error)throw Error(t.error);}
   else if(d.type==='ledger-merge'||d.type==='ledger-merge-preview'||d.type==='ledger-merge-undo'){
-   if(p.pid!==r.hostPid)throw Error('방장만 정산 기록을 합칠 수 있습니다.');if(activeGames())throw Error('모든 타임제 경기를 마친 뒤 합쳐주세요.');
+   if(p.pid!==r.hostPid)throw Error('방장만 정산 기록을 합칠 수 있습니다.');
    if(d.type==='ledger-merge-preview'){if(d.version!==t.ledger.version)throw Error('정산 내용이 변경되었습니다.');const next=structuredClone(t.ledger);const info=M.preview(next,d.from,d.to);M.merge(next,{...d,actor:p.pid});return ack({ok:true,info,calculation:next.calculation});}
    const next=structuredClone(t.ledger);const changed=d.type==='ledger-merge'?M.merge(next,{...d,actor:p.pid}):M.undo(next,{...d,actor:p.pid});if(changed)persist(r,next);
   }
   else if(d.type==='ledger-reset'){if(p.pid!==r.hostPid)throw Error('방장만 초기화할 수 있습니다.');if(activeGames())throw Error('모든 타임제 경기를 마친 뒤 초기화해주세요.');common.reset({version:d.version,requestId:d.requestId,actor:p.pid});publish();for(const room of E.rooms.values())if(is(room))E.send(room);}
-  else if(d.type==='settlement-complete'){if(r.startedAt||p.pid!==r.hostPid)throw Error('경기 종료 후 방장만 실제 정산 완료를 기록할 수 있습니다.');const next=structuredClone(common.ledger);L.confirm(next,{version:d.version,pid:d.pid,actor:p.pid,requestId:d.requestId});persist(r,next);t.ledger=next;}
+  else if(d.type==='settlement-complete')throw Error('개별 정산 완료 기록은 더 이상 사용하지 않습니다.');
   else throw Error('잘못된 요청');E.send(r);ack({ok:true});
  }catch(e){ack({error:e.message});}});}
  return {is,identify,init,restore,persist,reconnect,buy,manualBuy,after,finish,before,schedule,publicState,detach,join,start,seat,reorder,handlers};

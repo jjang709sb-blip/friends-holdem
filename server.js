@@ -390,8 +390,8 @@ function leagueDecideUnsafe(r,p,data){const l=r.league;if(!l||typeof data.gameId
  l.pendingSettlement=null;l.error=null;return {ok:true,status:data.decision};
 }
 // Account mutations are staged on a clone and published only after durable replacement succeeds.
-function automaticLedger(l){if(l.automatic)return structuredClone(l.automatic);const a=settlementLedger.create();const rows=Object.values(l.ledger).filter(x=>x.hasParticipated||x.games||x.points);if(rows.length)settlementLedger.settleDeltas(a,'legacy-import',rows.map(x=>({pid:x.pid,name:x.name,delta:String(BigInt(x.points)*120000n)})),{mode:'tournament',legacy:true});return a;}
-function leagueDecide(r,p,data){const original=r.league,oldStatus=r.leagueGame?.settlementStatus;r.league=leagueCopy(original);try{const result=leagueDecideUnsafe(r,p,data);if(result.error||result.alreadyResolved){r.league=original;return result;}if(data.decision==='applied'){r.league.automatic=automaticLedger(original);const g=r.league.history.at(-1);settlementLedger.settleDeltas(r.league.automatic,g.gameId,g.players.map(x=>({pid:x.pid,name:x.name,delta:String(BigInt(x.delta)*120000n)})),{mode:'tournament'});}if(r.league.automatic)timed.persist(r);return result;}catch(e){r.league=original;if(r.leagueGame)r.leagueGame.settlementStatus=oldStatus;throw e;}}
+function automaticLedger(l){if(l.automatic)return settlementLedger.migrate(structuredClone(l.automatic));const a=settlementLedger.create();const rows=Object.values(l.ledger).filter(x=>x.hasParticipated||x.games||x.points);if(rows.length)settlementLedger.settleDeltas(a,'legacy-import',rows.map(x=>({pid:x.pid,name:x.name,delta:String(BigInt(x.points)*(10000n*settlementLedger.SCALE))})),{mode:'tournament',legacy:true});return a;}
+function leagueDecide(r,p,data){const original=r.league,oldStatus=r.leagueGame?.settlementStatus;r.league=leagueCopy(original);try{const result=leagueDecideUnsafe(r,p,data);if(result.error||result.alreadyResolved){r.league=original;return result;}if(data.decision==='applied'){r.league.automatic=automaticLedger(original);const g=r.league.history.at(-1);settlementLedger.settleDeltas(r.league.automatic,g.gameId,g.players.map(x=>({pid:x.pid,name:x.name,delta:String(BigInt(x.delta)*(10000n*settlementLedger.SCALE))})),{mode:'tournament'});}if(r.league.automatic)timed.persist(r);return result;}catch(e){r.league=original;if(r.leagueGame)r.leagueGame.settlementStatus=oldStatus;throw e;}}
 function completeLeaguePayment(r,p,d){if(r.startedAt)throw Error('경기 종료 후 실제 정산 완료를 기록해주세요.');const original=r.league;if(!original)throw Error('누적정산 기록이 없습니다.');const next=leagueCopy(original);next.automatic=automaticLedger(original);settlementLedger.confirm(next.automatic,{version:d.version,pid:d.pid,actor:p.pid,requestId:d.requestId});try{r.league=next;timed.persist(r);}catch(e){r.league=original;throw e;}return {ok:true};}
 function installLeagueHandlers(s){
  const handler=(event,host,fn)=>s.on(event,(data,callback)=>{const ack=typeof callback==='function'?callback:()=>{};const rp=roomPlayerForSocket(s);if(!rp)return ack({error:'방에 입장해주세요.'});if(host&&rp.p.pid!==rp.r.hostPid)return ack({error:'방장만 변경할 수 있습니다.'});try{const result=fn(rp.r,rp.p,data||{});leagueBroadcast(rp.r);ack(result||{ok:true})}catch(e){console.error('[LEAGUE]',e);ack({error:'정산 요청을 처리하지 못했습니다.'})}});
@@ -414,7 +414,7 @@ function installLeagueHandlers(s){
 io.on('connection',s=>{
  installLeagueHandlers(s);
  timed.handlers(s);
- const meaningful=new Set(['auto-rebuy:set','practice:pause','practice:cards','settlement:decide','league:open','league:edit','league:confirm','league:agree','league:reset','activity','pre-action','room:kick','chat:send','action','reaction','settings','start','rebuy','restart-session']);
+ const meaningful=new Set(['auto-rebuy:set','practice:pause','practice:cards','settlement:decide','league:open','league:edit','league:confirm','league:agree','league:reset','activity','pre-action','room:kick','room:transfer-host','chat:send','action','reaction','settings','start','rebuy','restart-session']);
  s.use((packet,next)=>{
   if(meaningful.has(packet[0])){const rp=roomPlayerForSocket(s);if(rp){
    if(isIdle(rp.p)){expirePlayer(rp.r,rp.p);const cb=packet.at(-1);if(typeof cb==='function')cb({error:'30분 무활동으로 퇴장되었습니다.',code:'IDLE_EXIT'});return}
@@ -546,6 +546,12 @@ io.on('connection',s=>{
  if(data.handId!==r.handId||!['fold','allin','max'].includes(data.type)||!['preflop','flop','turn','river'].includes(r.street)||!canAct(r,p)||r.players[r.turn]===p)return ack({error:'현재 예약할 수 없습니다.'});
  if(data.type==='allin'&&availableBet(r,p)<p.stack)return ack({error:'MAX로 예약해주세요.'});
  p.preAction=p.preAction?.type===data.type?null:{type:data.type,handId:r.handId};send(r);ack({ok:true});
+ });
+ s.on('room:transfer-host',(data={},ack=()=>{})=>{
+ const rp=roomPlayerForSocket(s);if(!rp||rp.p.pid!==rp.r.hostPid)return ack({error:'방장만 위임할 수 있습니다.'});
+ const r=rp.r,target=r.players.find(p=>p.pid===data.pid&&!p.departed&&!p.leaveAfterHand&&!p.spectator&&p.socketId);
+ if(r.practice||!target||target.pid===rp.p.pid||target.botStyle)return ack({error:'현재 연결된 참가자를 선택해주세요.'});
+ r.hostPid=target.pid;note(r,`👑 ${target.name}에게 방장 위임`);send(r);emitLobby();ack({ok:true});
  });
  s.on('room:kick',(data={},ack=()=>{})=>{
  const rp=roomPlayerForSocket(s);if(!rp||rp.p.pid!==rp.r.hostPid)return ack({error:'방장만 사용할 수 있습니다.'});
